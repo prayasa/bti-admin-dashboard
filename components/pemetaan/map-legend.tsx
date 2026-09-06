@@ -9,6 +9,7 @@ export interface MapLayerVisibility {
   attendance: boolean;
   activeAssignments: boolean;
   completedAssignments: boolean;
+  liveTechnicians: boolean;
 }
 
 export type MapLayerKey = keyof MapLayerVisibility;
@@ -19,6 +20,7 @@ interface MapLegendProps {
     attendance: number;
     activeAssignments: number;
     completedAssignments: number;
+    liveTechnicians: number;
   };
   onToggle: (layer: MapLayerKey) => void;
 }
@@ -33,6 +35,12 @@ const legendItems: Array<{
     key: "office",
     label: "Kantor dan geofence",
     dotClassName: "border-blue-700 bg-blue-600",
+  },
+  {
+    key: "liveTechnicians",
+    label: "Posisi teknisi live",
+    count: "liveTechnicians",
+    dotClassName: "border-cyan-700 bg-cyan-500",
   },
   {
     key: "attendance",
