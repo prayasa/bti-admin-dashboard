@@ -84,9 +84,19 @@ type AttendanceLog = {
   teknisi: TechnicianRelation;
 };
 
-type AnomalyLog = {
-  token_uuid: string;
-  digunakan_pada: string | null;
+type AttendanceAudit = {
+  id_audit: string | number;
+  technician_id: string;
+  attendance_type: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  accuracy_meters: number | null;
+  location_age_ms: number | null;
+  distance_meters: number | null;
+  is_mock: boolean | null;
+  result: string;
+  reason: string | null;
+  created_at: string | null;
 };
 
 type DeleteTarget = {
@@ -190,15 +200,35 @@ function isLogInsideFilter(
   );
 }
 
-function hasValidCoordinates(
-  log: AttendanceLog,
+function hasCoordinates(
+  latitude: number | null,
+  longitude: number | null,
 ): boolean {
-  return Boolean(
-    log.latitude_aktual &&
-      log.longitude_aktual &&
-      log.latitude_aktual !== 0 &&
-      log.longitude_aktual !== 0,
+  if (
+    latitude === null ||
+    longitude === null
+  ) {
+    return false;
+  }
+
+  return (
+    Number.isFinite(Number(latitude)) &&
+    Number.isFinite(Number(longitude)) &&
+    !(latitude === 0 && longitude === 0)
   );
+}
+
+function formatMeters(
+  value: number | null,
+): string {
+  if (
+    value === null ||
+    !Number.isFinite(Number(value))
+  ) {
+    return "-";
+  }
+
+  return `${Math.round(Number(value))} m`;
 }
 
 export default function AttendancePage() {
@@ -213,8 +243,8 @@ export default function AttendancePage() {
   const [attendanceLogs, setAttendanceLogs] =
     useState<AttendanceLog[]>([]);
 
-  const [anomalyLogs, setAnomalyLogs] =
-    useState<AnomalyLog[]>([]);
+  const [attendanceAudits, setAttendanceAudits] =
+    useState<AttendanceAudit[]>([]);
 
   const [filterMode, setFilterMode] =
     useState<FilterMode>("minggu");
@@ -240,7 +270,7 @@ export default function AttendancePage() {
         const [
           techniciansResult,
           attendanceResult,
-          anomaliesResult,
+          auditsResult,
         ] = await Promise.all([
           supabase
             .from("teknisi")
@@ -271,20 +301,34 @@ export default function AttendancePage() {
             .limit(1000),
 
           supabase
-            .from("token_qr_hangus")
+            .from("presensi_audit")
             .select(
-              "token_uuid, digunakan_pada",
+              [
+                "id_audit",
+                "technician_id",
+                "attendance_type",
+                "latitude",
+                "longitude",
+                "accuracy_meters",
+                "location_age_ms",
+                "distance_meters",
+                "is_mock",
+                "result",
+                "reason",
+                "created_at",
+              ].join(","),
             )
-            .order("digunakan_pada", {
+            .eq("result", "REJECTED")
+            .order("created_at", {
               ascending: false,
             })
-            .limit(15),
+            .limit(1000),
         ]);
 
         const errors = [
           techniciansResult.error,
           attendanceResult.error,
-          anomaliesResult.error,
+          auditsResult.error,
         ].flatMap((error) =>
           error ? [error.message] : [],
         );
@@ -338,9 +382,9 @@ export default function AttendancePage() {
             []) as unknown as AttendanceLog[],
         );
 
-        setAnomalyLogs(
-          (anomaliesResult.data ??
-            []) as unknown as AnomalyLog[],
+        setAttendanceAudits(
+          (auditsResult.data ??
+            []) as unknown as AttendanceAudit[],
         );
       } catch (error) {
         console.error(
@@ -381,7 +425,7 @@ export default function AttendancePage() {
         {
           event: "*",
           schema: "public",
-          table: "token_qr_hangus",
+          table: "presensi_audit",
         },
         () => {
           void fetchData(false);
@@ -416,6 +460,24 @@ export default function AttendancePage() {
       ),
     [
       attendanceLogs,
+      filterMode,
+      selectedTechnicianId,
+    ],
+  );
+
+  const filteredRejectedAudits = useMemo(
+    () =>
+      attendanceAudits.filter(
+        (audit) =>
+          String(audit.technician_id) ===
+            selectedTechnicianId &&
+          isLogInsideFilter(
+            audit.created_at,
+            filterMode,
+          ),
+      ),
+    [
+      attendanceAudits,
       filterMode,
       selectedTechnicianId,
     ],
@@ -471,12 +533,14 @@ export default function AttendancePage() {
     ).length;
 
     return {
-      total: filteredLogs.length,
+      official: filteredLogs.length,
       valid: validLogs.length,
-      invalid: invalidLogs.length,
+      rejected:
+        invalidLogs.length +
+        filteredRejectedAudits.length,
       completeDays,
     };
-  }, [filteredLogs]);
+  }, [filteredLogs, filteredRejectedAudits]);
 
   const handleDeleteAttendance =
     async (): Promise<boolean> => {
@@ -541,7 +605,7 @@ export default function AttendancePage() {
     <div className="page-container space-y-5">
       <PageHeader
         title="Manajemen Presensi"
-        description="Pantau riwayat masuk dan pulang teknisi, validasi geofence, serta aktivitas penggunaan token yang tidak sah."
+        description="Pantau riwayat masuk dan pulang teknisi, validasi geofence, serta percobaan presensi yang ditolak."
         actions={
           <>
             <Badge variant="success">
@@ -646,9 +710,9 @@ export default function AttendancePage() {
               <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border lg:grid-cols-4">
                 {[
                   {
-                    label: "Total log",
+                    label: "Presensi resmi",
                     value:
-                      attendanceSummary.total,
+                      attendanceSummary.official,
                   },
                   {
                     label: "Valid",
@@ -656,9 +720,9 @@ export default function AttendancePage() {
                       attendanceSummary.valid,
                   },
                   {
-                    label: "Tidak valid",
+                    label: "Percobaan ditolak",
                     value:
-                      attendanceSummary.invalid,
+                      attendanceSummary.rejected,
                   },
                   {
                     label: "Hari lengkap",
@@ -696,7 +760,7 @@ export default function AttendancePage() {
             </CardContent>
           </Card>
 
-          <div className="grid grid-cols-1 items-start gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid grid-cols-1 items-start gap-4 2xl:grid-cols-[minmax(0,1fr)_400px]">
             <Card className="min-w-0 gap-0 overflow-hidden">
               <CardHeader className="pb-4">
                 <CardTitle>
@@ -788,7 +852,10 @@ export default function AttendancePage() {
                           );
 
                         const validCoordinates =
-                          hasValidCoordinates(log);
+                          hasCoordinates(
+                            log.latitude_aktual,
+                            log.longitude_aktual,
+                          );
 
                         return (
                           <TableRow
@@ -888,26 +955,26 @@ export default function AttendancePage() {
               </CardContent>
             </Card>
 
-            <Card className="gap-0 overflow-hidden">
+            <Card className="min-w-0 gap-0 overflow-hidden">
               <CardHeader className="pb-4">
                 <CardTitle>
-                  Token ditolak
+                  Percobaan ditolak
                 </CardTitle>
 
                 <CardDescription>
-                  Percobaan menggunakan token QR
-                  yang sudah tidak berlaku.
+                  Audit presensi teknisi terpilih
+                  yang tidak lolos validasi.
                 </CardDescription>
 
                 <CardAction>
                   <Badge
                     variant={
-                      anomalyLogs.length > 0
+                      filteredRejectedAudits.length > 0
                         ? "destructive"
                         : "success"
                     }
                   >
-                    {anomalyLogs.length}
+                    {filteredRejectedAudits.length}
                   </Badge>
                 </CardAction>
               </CardHeader>
@@ -920,59 +987,177 @@ export default function AttendancePage() {
                     }).map((_, index) => (
                       <div
                         key={index}
-                        className="space-y-2 border-b border-border p-3 last:border-b-0"
+                        className="space-y-3 border-b border-border p-4 last:border-b-0"
                       >
-                        <Skeleton className="h-4 w-24" />
-                        <Skeleton className="h-3 w-full" />
-                        <Skeleton className="h-3 w-28" />
+                        <div className="flex justify-between gap-3">
+                          <Skeleton className="h-5 w-16 rounded-full" />
+                          <Skeleton className="h-3 w-28" />
+                        </div>
+
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-4/5" />
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <Skeleton className="h-11 w-full" />
+                          <Skeleton className="h-11 w-full" />
+                        </div>
                       </div>
                     ))
-                  ) : anomalyLogs.length ===
+                  ) : !selectedTechnician ? (
+                    <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 text-center">
+                      <ShieldAlert
+                        className="size-5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+
+                      <p className="text-xs text-muted-foreground">
+                        Pilih teknisi untuk melihat
+                        percobaan presensi yang ditolak.
+                      </p>
+                    </div>
+                  ) : filteredRejectedAudits.length ===
                     0 ? (
-                    <div className="flex min-h-32 flex-col items-center justify-center gap-2 px-4 text-center">
+                    <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 text-center">
                       <ShieldAlert
                         className="size-5 text-success"
                         aria-hidden="true"
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Tidak ada token bermasalah.
+
+                      <p className="text-xs font-medium text-foreground">
+                        Tidak ada penolakan
+                      </p>
+
+                      <p className="text-[11px] leading-relaxed text-muted-foreground">
+                        Tidak ada percobaan presensi
+                        yang ditolak pada rentang waktu
+                        ini.
                       </p>
                     </div>
                   ) : (
-                    anomalyLogs.map(
-                      (anomaly) => (
-                        <div
-                          key={`${anomaly.token_uuid}-${anomaly.digunakan_pada}`}
-                          className="border-b border-border p-3 last:border-b-0"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <Badge variant="destructive">
-                              Diblokir
-                            </Badge>
+                    filteredRejectedAudits.map(
+                      (audit) => {
+                        const validCoordinates =
+                          hasCoordinates(
+                            audit.latitude,
+                            audit.longitude,
+                          );
 
-                            <span className="text-[10px] text-muted-foreground">
-                              {formatWibDateTime(
-                                anomaly.digunakan_pada,
-                              )}
-                            </span>
-                          </div>
-
-                          <p
-                            className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
-                            title={
-                              anomaly.token_uuid
-                            }
+                        return (
+                          <article
+                            key={audit.id_audit}
+                            className="border-b border-border p-4 last:border-b-0"
                           >
-                            {anomaly.token_uuid}
-                          </p>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <Badge
+                                  variant={
+                                    audit.attendance_type ===
+                                    "MASUK"
+                                      ? "success"
+                                      : audit.attendance_type ===
+                                          "PULANG"
+                                        ? "warning"
+                                        : "neutral"
+                                  }
+                                >
+                                  {audit.attendance_type ||
+                                    "Tidak diketahui"}
+                                </Badge>
 
-                          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-                            Identitas pengguna tidak
-                            disimpan pada tabel
-                            anomali.
-                          </p>
-                        </div>
-                      ),
+                                <Badge variant="destructive">
+                                  Ditolak
+                                </Badge>
+                              </div>
+
+                              <time
+                                className="shrink-0 text-right text-[10px] leading-relaxed text-muted-foreground"
+                                dateTime={
+                                  audit.created_at ??
+                                  undefined
+                                }
+                              >
+                                {formatWibDateTime(
+                                  audit.created_at,
+                                )}
+                              </time>
+                            </div>
+
+                            <div className="mt-3 flex items-start gap-2">
+                              <ShieldAlert
+                                className="mt-0.5 size-4 shrink-0 text-destructive"
+                                aria-hidden="true"
+                              />
+
+                              <p className="text-xs leading-relaxed text-foreground">
+                                {audit.reason ||
+                                  "Permintaan ditolak oleh server."}
+                              </p>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              <div className="col-span-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                  Lokasi perangkat
+                                </p>
+
+                                {validCoordinates ? (
+                                  <p className="mt-1 inline-flex items-center gap-1.5 font-mono text-[10px] text-foreground">
+                                    <MapPin
+                                      className="size-3 text-muted-foreground"
+                                      aria-hidden="true"
+                                    />
+
+                                    {Number(
+                                      audit.latitude,
+                                    ).toFixed(5)}
+                                    ,{" "}
+                                    {Number(
+                                      audit.longitude,
+                                    ).toFixed(5)}
+                                  </p>
+                                ) : (
+                                  <p className="mt-1 text-[10px] text-muted-foreground">
+                                    GPS tidak tersedia
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                  Jarak kantor
+                                </p>
+
+                                <p className="mt-1 text-xs font-semibold tabular-nums text-foreground">
+                                  {formatMeters(
+                                    audit.distance_meters,
+                                  )}
+                                </p>
+                              </div>
+
+                              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                  Akurasi GPS
+                                </p>
+
+                                <p className="mt-1 text-xs font-semibold tabular-nums text-foreground">
+                                  {formatMeters(
+                                    audit.accuracy_meters,
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            {audit.is_mock === true ? (
+                              <Badge
+                                variant="destructive"
+                                className="mt-3"
+                              >
+                                Lokasi tiruan terdeteksi
+                              </Badge>
+                            ) : null}
+                          </article>
+                        );
+                      },
                     )
                   )}
                 </div>
