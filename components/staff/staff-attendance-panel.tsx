@@ -28,6 +28,7 @@ import { supabase } from "@/src/utils/supabase";
 const LOCATION_TIMEOUT_MILLIS = 20_000;
 const LOCATION_REFRESH_THRESHOLD_MILLIS = 25_000;
 const SCAN_INTERVAL_MILLIS = 100;
+const VIDEO_READY_TIMEOUT_MILLIS = 10_000;
 const MAX_SCAN_WIDTH = 960;
 
 type AttendanceType = "MASUK" | "PULANG";
@@ -218,6 +219,50 @@ function getCameraErrorMessage(error: unknown) {
   return "Kamera belum dapat dibuka. Periksa izin kamera lalu coba kembali.";
 }
 
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
+}
+
+function waitForVideoFrame(
+  videoElement: HTMLVideoElement,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const startedAt = performance.now();
+
+    const checkFrame = () => {
+      if (
+        videoElement.readyState >=
+          HTMLMediaElement.HAVE_CURRENT_DATA &&
+        videoElement.videoWidth > 0 &&
+        videoElement.videoHeight > 0
+      ) {
+        resolve();
+        return;
+      }
+
+      if (
+        performance.now() - startedAt >=
+        VIDEO_READY_TIMEOUT_MILLIS
+      ) {
+        reject(
+          new Error("VIDEO_FRAME_TIMEOUT"),
+        );
+        return;
+      }
+
+      window.requestAnimationFrame(checkFrame);
+    };
+
+    checkFrame();
+  });
+}
+
 function getFreshLocation() {
   return new Promise<LocationSnapshot>(
     (resolve, reject) => {
@@ -379,6 +424,7 @@ export function StaffAttendancePanel({
     useRef<number | null>(null);
   const scannerActiveRef = useRef(false);
   const processingResultRef = useRef(false);
+  const scannerSessionRef = useRef(0);
   const latestLocationRef =
     useRef<LocationSnapshot | null>(null);
 
@@ -397,6 +443,7 @@ export function StaffAttendancePanel({
 
   const stopCapture = useCallback(() => {
     scannerActiveRef.current = false;
+    scannerSessionRef.current += 1;
 
     if (animationFrameRef.current !== null) {
       window.cancelAnimationFrame(
@@ -426,6 +473,22 @@ export function StaffAttendancePanel({
     if (videoElement) {
       videoElement.pause();
       videoElement.srcObject = null;
+    }
+
+    const canvasElement = canvasRef.current;
+    const canvasContext =
+      canvasElement?.getContext("2d");
+
+    if (canvasElement && canvasContext) {
+      canvasContext.clearRect(
+        0,
+        0,
+        canvasElement.width,
+        canvasElement.height,
+      );
+
+      canvasElement.width = 1;
+      canvasElement.height = 1;
     }
   }, []);
 
@@ -647,6 +710,12 @@ export function StaffAttendancePanel({
     }
 
     stopCapture();
+
+    const scannerSession =
+      scannerSessionRef.current + 1;
+
+    scannerSessionRef.current =
+      scannerSession;
     processingResultRef.current = false;
     setAttendanceResult(null);
     setErrorMessage("");
@@ -665,8 +734,28 @@ export function StaffAttendancePanel({
     }
 
     try {
+      /*
+       * Safari/iOS perlu elemen video benar-benar
+       * terlihat sebelum MediaStream diputar ulang.
+       */
+      await waitForNextPaint();
+
+      if (
+        scannerSessionRef.current !==
+        scannerSession
+      ) {
+        return;
+      }
+
       const initialLocation =
         await getFreshLocation();
+
+      if (
+        scannerSessionRef.current !==
+        scannerSession
+      ) {
+        return;
+      }
 
       latestLocationRef.current =
         initialLocation;
@@ -702,6 +791,17 @@ export function StaffAttendancePanel({
           },
         });
 
+      if (
+        scannerSessionRef.current !==
+        scannerSession
+      ) {
+        for (const track of mediaStream.getTracks()) {
+          track.stop();
+        }
+
+        return;
+      }
+
       mediaStreamRef.current = mediaStream;
 
       const videoElement = videoRef.current;
@@ -717,6 +817,15 @@ export function StaffAttendancePanel({
       videoElement.playsInline = true;
 
       await videoElement.play();
+      await waitForVideoFrame(videoElement);
+
+      if (
+        scannerSessionRef.current !==
+        scannerSession
+      ) {
+        stopCapture();
+        return;
+      }
 
       scannerActiveRef.current = true;
       setPhase("scanning");
@@ -727,7 +836,11 @@ export function StaffAttendancePanel({
       let lastScanTime = 0;
 
       const scanFrame = (timestamp: number) => {
-        if (!scannerActiveRef.current) {
+        if (
+          !scannerActiveRef.current ||
+          scannerSessionRef.current !==
+            scannerSession
+        ) {
           return;
         }
 
@@ -842,6 +955,12 @@ export function StaffAttendancePanel({
         setErrorMessage(
           "Kamera browser tidak tersedia. Gunakan Safari terbaru melalui HTTPS.",
         );
+      } else if (
+        errorText === "VIDEO_FRAME_TIMEOUT"
+      ) {
+        setErrorMessage(
+          "Kamera terbuka, tetapi frame pemindai belum siap. Tutup pemindai lalu coba kembali.",
+        );
       } else {
         setErrorMessage(
           getCameraErrorMessage(error),
@@ -945,6 +1064,7 @@ export function StaffAttendancePanel({
 
       <div
         className={`relative overflow-hidden rounded-lg border bg-black ${
+          phase === "preparing" ||
           phase === "scanning"
             ? "block"
             : "hidden"
