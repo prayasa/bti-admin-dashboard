@@ -59,28 +59,67 @@ import { supabase } from "@/src/utils/supabase";
 
 const WIB_TIME_ZONE = "Asia/Jakarta";
 
+type TechnicianAccessPlatform =
+  | "ANDROID_NATIVE"
+  | "WEB_PWA"
+  | "UNBOUND";
+
 type Technician = {
   id: string;
   nama_lengkap: string;
   nik: string;
-  device_id: string | null;
+  android_device_id: string | null;
   created_at: string | null;
+  access_platform: TechnicianAccessPlatform;
+  pwa_last_login_at: string | null;
+  pwa_last_seen_at: string | null;
 };
 
 type TechnicianDatabaseRow = {
   id: string | number;
   nama_lengkap: string;
   nik: string;
-  device_id: string | null;
+  android_device_id: string | null;
   created_at: string | null;
+  access_platform: string | null;
+  pwa_last_login_at: string | null;
+  pwa_last_seen_at: string | null;
 };
+
+function normalizeOptionalText(
+  value: unknown,
+): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+
+  return normalized ? normalized : null;
+}
+
+function normalizeAccessPlatform(
+  value: unknown,
+): TechnicianAccessPlatform {
+  if (value === "ANDROID_NATIVE") {
+    return "ANDROID_NATIVE";
+  }
+
+  if (value === "WEB_PWA") {
+    return "WEB_PWA";
+  }
+
+  return "UNBOUND";
+}
 
 function getInitials(name: string): string {
   const initials = name
     .trim()
     .split(/\s+/)
     .slice(0, 2)
-    .map((word) => word.charAt(0).toUpperCase())
+    .map((word) =>
+      word.charAt(0).toUpperCase(),
+    )
     .join("");
 
   return initials || "TK";
@@ -107,12 +146,52 @@ function formatDate(
   }).format(date);
 }
 
+function formatDateTime(
+  isoDate: string | null,
+): string {
+  if (!isoDate) {
+    return "-";
+  }
+
+  const date = new Date(isoDate);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: WIB_TIME_ZONE,
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function getPlatformLabel(
+  platform: TechnicianAccessPlatform,
+): string {
+  if (platform === "ANDROID_NATIVE") {
+    return "Android terikat";
+  }
+
+  if (platform === "WEB_PWA") {
+    return "PWA aktif";
+  }
+
+  return "Belum terhubung";
+}
+
 export default function TechniciansPage() {
   const [technicians, setTechnicians] =
     useState<Technician[]>([]);
 
-  const [editingTechnician, setEditingTechnician] =
-    useState<EditableTechnician | null>(null);
+  const [
+    editingTechnician,
+    setEditingTechnician,
+  ] = useState<EditableTechnician | null>(
+    null,
+  );
 
   const [deleteTarget, setDeleteTarget] =
     useState<Technician | null>(null);
@@ -141,12 +220,10 @@ export default function TechniciansPage() {
       setErrorMessage(null);
 
       try {
-        const { data, error } = await supabase
-          .from("teknisi")
-          .select("id, nama_lengkap, nik, device_id, created_at")
-          .order("created_at", {
-            ascending: false,
-          });
+        const { data, error } =
+          await supabase.rpc(
+            "admin_get_technicians_with_device_status",
+          );
 
         if (error) {
           throw error;
@@ -156,11 +233,41 @@ export default function TechniciansPage() {
           (data ?? []) as unknown as TechnicianDatabaseRow[]
         ).map((technician) => ({
           id: String(technician.id),
+
           nama_lengkap:
-            technician.nama_lengkap,
-          nik: technician.nik,
-          device_id: technician.device_id,
-          created_at: technician.created_at,
+            normalizeOptionalText(
+              technician.nama_lengkap,
+            ) ?? "Teknisi",
+
+          nik:
+            normalizeOptionalText(
+              technician.nik,
+            ) ?? "-",
+
+          android_device_id:
+            normalizeOptionalText(
+              technician.android_device_id,
+            ),
+
+          created_at:
+            normalizeOptionalText(
+              technician.created_at,
+            ),
+
+          access_platform:
+            normalizeAccessPlatform(
+              technician.access_platform,
+            ),
+
+          pwa_last_login_at:
+            normalizeOptionalText(
+              technician.pwa_last_login_at,
+            ),
+
+          pwa_last_seen_at:
+            normalizeOptionalText(
+              technician.pwa_last_seen_at,
+            ),
         }));
 
         setTechnicians(
@@ -168,12 +275,12 @@ export default function TechniciansPage() {
         );
       } catch (error) {
         console.error(
-          "Gagal memuat teknisi:",
+          "Gagal memuat status perangkat teknisi:",
           error,
         );
 
         setErrorMessage(
-          "Data teknisi tidak dapat dimuat. Periksa koneksi lalu coba kembali.",
+          "Data teknisi dan status perangkat tidak dapat dimuat. Periksa sesi administrator lalu coba kembali.",
         );
       } finally {
         if (showLoading) {
@@ -188,30 +295,53 @@ export default function TechniciansPage() {
     void fetchTechnicians();
   }, [fetchTechnicians]);
 
-  const filteredTechnicians = useMemo(() => {
-    const normalizedQuery = searchQuery
-      .trim()
-      .toLocaleLowerCase("id-ID");
+  const filteredTechnicians = useMemo(
+    () => {
+      const normalizedQuery = searchQuery
+        .trim()
+        .toLocaleLowerCase("id-ID");
 
-    if (!normalizedQuery) {
-      return technicians;
-    }
+      if (!normalizedQuery) {
+        return technicians;
+      }
 
-    return technicians.filter(
-      (technician) =>
-        technician.nama_lengkap
-          .toLocaleLowerCase("id-ID")
-          .includes(normalizedQuery) ||
-        technician.nik
-          .toLocaleLowerCase("id-ID")
-          .includes(normalizedQuery),
-    );
-  }, [searchQuery, technicians]);
+      return technicians.filter(
+        (technician) =>
+          technician.nama_lengkap
+            .toLocaleLowerCase("id-ID")
+            .includes(normalizedQuery) ||
+          technician.nik
+            .toLocaleLowerCase("id-ID")
+            .includes(normalizedQuery) ||
+          getPlatformLabel(
+            technician.access_platform,
+          )
+            .toLocaleLowerCase("id-ID")
+            .includes(normalizedQuery),
+      );
+    },
+    [searchQuery, technicians],
+  );
 
   const connectedTechnicians =
     technicians.filter(
       (technician) =>
-        Boolean(technician.device_id),
+        technician.access_platform !==
+        "UNBOUND",
+    ).length;
+
+  const androidTechnicians =
+    technicians.filter(
+      (technician) =>
+        technician.access_platform ===
+        "ANDROID_NATIVE",
+    ).length;
+
+  const pwaTechnicians =
+    technicians.filter(
+      (technician) =>
+        technician.access_platform ===
+        "WEB_PWA",
     ).length;
 
   const handleSaveTechnician = async (
@@ -264,7 +394,8 @@ export default function TechniciansPage() {
               nama_lengkap:
                 payload.nama_lengkap,
               nik: payload.nik,
-              password: payload.password,
+              password:
+                payload.password,
             },
           ]);
 
@@ -382,12 +513,13 @@ export default function TechniciansPage() {
     <div className="page-container space-y-5">
       <PageHeader
         title="Manajemen Teknisi"
-        description="Kelola identitas, kredensial, dan status perangkat teknisi lapangan."
+        description="Kelola identitas, kredensial, dan status akses perangkat teknisi lapangan."
         actions={
           <>
             <Badge variant="success">
               <UsersRound aria-hidden="true" />
-              {connectedTechnicians} perangkat aktif
+              {connectedTechnicians} akun
+              terhubung
             </Badge>
 
             <Button
@@ -428,6 +560,44 @@ export default function TechniciansPage() {
         </div>
       ) : null}
 
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardDescription>
+              Total teknisi
+            </CardDescription>
+
+            <CardTitle className="text-2xl">
+              {technicians.length}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardDescription>
+              Android terikat
+            </CardDescription>
+
+            <CardTitle className="text-2xl">
+              {androidTechnicians}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardDescription>
+              PWA aktif
+            </CardDescription>
+
+            <CardTitle className="text-2xl">
+              {pwaTechnicians}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+      </div>
+
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
         <div className="xl:sticky xl:top-20">
           <TechnicianForm
@@ -455,8 +625,8 @@ export default function TechniciansPage() {
             </CardTitle>
 
             <CardDescription>
-              Daftar teknisi dan status perangkat
-              yang terhubung.
+              Daftar teknisi beserta platform
+              perangkat yang sedang terhubung.
             </CardDescription>
 
             <CardAction>
@@ -482,7 +652,7 @@ export default function TechniciansPage() {
                   )
                 }
                 className="pl-8"
-                placeholder="Cari nama atau NIK..."
+                placeholder="Cari nama, NIK, atau platform..."
                 aria-label="Cari teknisi"
               />
             </div>
@@ -494,13 +664,19 @@ export default function TechniciansPage() {
                     <TableHead>
                       Teknisi
                     </TableHead>
-                    <TableHead>NIK</TableHead>
+
                     <TableHead>
-                      Perangkat
+                      NIK
                     </TableHead>
+
+                    <TableHead>
+                      Akses perangkat
+                    </TableHead>
+
                     <TableHead>
                       Terdaftar
                     </TableHead>
+
                     <TableHead className="w-28 text-right">
                       Aksi
                     </TableHead>
@@ -519,15 +695,19 @@ export default function TechniciansPage() {
                             <Skeleton className="h-4 w-28" />
                           </div>
                         </TableCell>
+
                         <TableCell>
                           <Skeleton className="h-4 w-24" />
                         </TableCell>
+
                         <TableCell>
-                          <Skeleton className="h-5 w-20 rounded-full" />
+                          <Skeleton className="h-5 w-24 rounded-full" />
                         </TableCell>
+
                         <TableCell>
                           <Skeleton className="h-4 w-20" />
                         </TableCell>
+
                         <TableCell>
                           <Skeleton className="ml-auto h-8 w-18" />
                         </TableCell>
@@ -574,17 +754,31 @@ export default function TechniciansPage() {
                           </TableCell>
 
                           <TableCell>
-                            <Badge
-                              variant={
-                                technician.device_id
-                                  ? "success"
-                                  : "warning"
-                              }
-                            >
-                              {technician.device_id
-                                ? "Terhubung"
-                                : "Belum login"}
-                            </Badge>
+                            <div className="space-y-1">
+                              <Badge
+                                variant={
+                                  technician.access_platform ===
+                                  "UNBOUND"
+                                    ? "warning"
+                                    : "success"
+                                }
+                              >
+                                {getPlatformLabel(
+                                  technician.access_platform,
+                                )}
+                              </Badge>
+
+                              {technician.access_platform ===
+                                "WEB_PWA" &&
+                              technician.pwa_last_seen_at ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                  Aktivitas{" "}
+                                  {formatDateTime(
+                                    technician.pwa_last_seen_at,
+                                  )}
+                                </p>
+                              ) : null}
+                            </div>
                           </TableCell>
 
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
