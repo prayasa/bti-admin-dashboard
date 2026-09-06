@@ -1,0 +1,119 @@
+{
+  "metadata": {
+    "dataset_name": "BTI Kota Pontianak Road Coverage Dataset",
+    "dataset_version": 1,
+    "coverage_name": "Kota Pontianak",
+    "coverage_type": "administrative_city_boundary",
+    "boundary_osm_relation_id": 10617336,
+    "boundary_source_url": "https://www.openstreetmap.org/relation/10617336",
+    "source": "OpenStreetMap via Overpass API and Nominatim",
+    "source_snapshot_at": "2026-09-06T20:04:26Z",
+    "generated_at": "2026-09-06T20:11:48+00:00",
+    "attribution": "© OpenStreetMap contributors",
+    "license": "Open Database License (ODbL) 1.0",
+    "coordinate_reference_system": "WGS 84 (EPSG:4326)",
+    "scope_note": "Indeks pencarian memuat seluruh ruas highway bernama yang tersedia di OpenStreetMap dalam boundary Kota Pontianak pada waktu snapshot."
+  },
+  "raw_named_segments": 2428,
+  "usable_named_segments": 2428,
+  "normalized_streets": 1522,
+  "skipped_segments": 0,
+  "streets_with_aliases": 13,
+  "highway_type_counts": {
+    "residential": 1728,
+    "tertiary": 201,
+    "living_street": 179,
+    "trunk": 114,
+    "unclassified": 109,
+    "service": 46,
+    "primary": 20,
+    "secondary": 14,
+    "footway": 7,
+    "path": 5,
+    "track": 3,
+    "cycleway": 1,
+    "trunk_link": 1
+  },
+  "largest_segment_groups": [
+    {
+      "name": "Jalan Ahmad Yani",
+      "segment_count": 27
+    },
+    {
+      "name": "Jalan Tanjung Pura",
+      "segment_count": 26
+    },
+    {
+      "name": "Jalan Pemda",
+      "segment_count": 24
+    },
+    {
+      "name": "Jalan Komodor Yos Sudarso",
+      "segment_count": 22
+    },
+    {
+      "name": "Gusti Situt Mahmud",
+      "segment_count": 19
+    },
+    {
+      "name": "Jalan Puskesmas Pal 3",
+      "segment_count": 19
+    },
+    {
+      "name": "Jalan Gajah Mada",
+      "segment_count": 12
+    },
+    {
+      "name": "Jalan Sultan Abdurahman",
+      "segment_count": 12
+    },
+    {
+      "name": "Jalan Perintis Kemerdekaan",
+      "segment_count": 11
+    },
+    {
+      "name": "Gang Sejahtera",
+      "segment_count": 10
+    },
+    {
+      "name": "Jalan Mohammad Sohor",
+      "segment_count": 10
+    },
+    {
+      "name": "Budi Utomo",
+      "segment_count": 9
+    },
+    {
+      "name": "Khatulistiwa",
+      "segment_count": 8
+    },
+    {
+      "name": "Gang Melati",
+      "segment_count": 7
+    },
+    {
+      "name": "Jalan Imam Bonjol",
+      "segment_count": 7
+    },
+    {
+      "name": "Jalan Pahlawan",
+      "segment_count": 7
+    },
+    {
+      "name": "Jalan Tabrani Ahmad",
+      "segment_count": 7
+    },
+    {
+      "name": "Jalan Tanjung Harapan",
+      "segment_count": 7
+    },
+    {
+      "name": "Selat Panjang",
+      "segment_count": 7
+    },
+    {
+      "name": "Jalan Abdurahman Saleh",
+      "segment_count": 6
+    }
+  ]
+}
