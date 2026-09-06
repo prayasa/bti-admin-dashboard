@@ -29,9 +29,33 @@ export interface AttendanceMapPoint {
   loggedAt: string;
 }
 
+export interface LiveTechnicianPoint {
+  technicianId: string;
+  assignmentId: string;
+  sessionId: string;
+  technicianName: string;
+  clientName: string;
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  speedMps: number | null;
+  bearingDegrees: number | null;
+  isMock: boolean;
+  isStale: boolean;
+  recordedAt: string;
+  receivedAt: string;
+}
+
+export interface TrackingRoutePath {
+  sessionId: string;
+  coordinates: Array<[number, number]>;
+}
+
 interface OperationsMapProps {
   assignments: MapAssignmentPoint[];
   attendancePoints: AttendanceMapPoint[];
+  liveTechnicians: LiveTechnicianPoint[];
+  trackingPaths: TrackingRoutePath[];
   visibility: MapLayerVisibility;
 }
 
@@ -48,6 +72,8 @@ const EARTH_RADIUS_METERS = 6_371_000;
 const GEOFENCE_SOURCE_ID = "bti-office-geofence";
 const GEOFENCE_FILL_LAYER_ID = "bti-office-geofence-fill";
 const GEOFENCE_LINE_LAYER_ID = "bti-office-geofence-line";
+const TRACKING_HISTORY_SOURCE_ID = "bti-tracking-history";
+const TRACKING_HISTORY_LAYER_ID = "bti-tracking-history-line";
 
 function isValidCoordinate(latitude: number, longitude: number) {
   return (
@@ -200,6 +226,39 @@ function createAttendanceMarkerElement(isValid: boolean) {
   return element;
 }
 
+function createLiveTechnicianMarkerElement(
+  isStale: boolean,
+  isMock: boolean,
+) {
+  const outer = document.createElement("div");
+  const color = isMock
+    ? "#dc2626"
+    : isStale
+      ? "#d97706"
+      : "#0891b2";
+
+  outer.style.display = "flex";
+  outer.style.height = "30px";
+  outer.style.width = "30px";
+  outer.style.alignItems = "center";
+  outer.style.justifyContent = "center";
+  outer.style.borderRadius = "9999px";
+  outer.style.border = `2px solid ${color}`;
+  outer.style.background = "rgba(255, 255, 255, 0.94)";
+  outer.style.boxShadow = "0 2px 8px rgba(15, 23, 42, 0.3)";
+
+  const inner = document.createElement("div");
+  inner.style.height = "12px";
+  inner.style.width = "12px";
+  inner.style.borderRadius = "9999px";
+  inner.style.background = color;
+  inner.style.border = "2px solid #ffffff";
+
+  outer.appendChild(inner);
+
+  return outer;
+}
+
 function getAssignmentMarkerColor(status: string) {
   switch (status) {
     case "Success":
@@ -234,9 +293,54 @@ function formatAttendanceTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatLiveTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Tidak tersedia";
+  }
+
+  return `${new Intl.DateTimeFormat("id-ID", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "Asia/Pontianak",
+  }).format(date)} WIB`;
+}
+
+function formatSpeed(speedMps: number | null) {
+  if (speedMps === null || !Number.isFinite(speedMps)) {
+    return "-";
+  }
+
+  return `${Math.max(0, speedMps * 3.6).toFixed(1)} km/jam`;
+}
+
+function createTrackingHistoryFeatureCollection(
+  trackingPaths: TrackingRoutePath[],
+) {
+  return {
+    type: "FeatureCollection" as const,
+    features: trackingPaths
+      .filter((path) => path.coordinates.length >= 2)
+      .map((path) => ({
+        type: "Feature" as const,
+        properties: {
+          sessionId: path.sessionId,
+        },
+        geometry: {
+          type: "LineString" as const,
+          coordinates: path.coordinates,
+        },
+      })),
+  };
+}
+
 export function OperationsMap({
   assignments,
   attendancePoints,
+  liveTechnicians,
+  trackingPaths,
   visibility,
 }: OperationsMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -307,6 +411,23 @@ export function OperationsMap({
       });
     }
 
+    if (visibility.liveTechnicians) {
+      liveTechnicians.forEach((technician) => {
+        if (
+          isValidCoordinate(
+            technician.latitude,
+            technician.longitude,
+          )
+        ) {
+          bounds.extend([
+            technician.longitude,
+            technician.latitude,
+          ]);
+          pointCount += 1;
+        }
+      });
+    }
+
     if (pointCount <= 1) {
       map.easeTo({
         center: [OFFICE_LONGITUDE, OFFICE_LATITUDE],
@@ -326,7 +447,12 @@ export function OperationsMap({
       maxZoom: 16,
       duration: 800,
     });
-  }, [assignments, attendancePoints, visibility]);
+  }, [
+    assignments,
+    attendancePoints,
+    liveTechnicians,
+    visibility,
+  ]);
 
   useEffect(() => {
     if (!accessToken || !mapContainerRef.current || mapRef.current) {
@@ -421,6 +547,26 @@ export function OperationsMap({
         },
       });
 
+      map.addSource(TRACKING_HISTORY_SOURCE_ID, {
+        type: "geojson",
+        data: createTrackingHistoryFeatureCollection([]),
+      });
+
+      map.addLayer({
+        id: TRACKING_HISTORY_LAYER_ID,
+        type: "line",
+        source: TRACKING_HISTORY_SOURCE_ID,
+        layout: {
+          "line-cap": "round",
+          "line-join": "round",
+        },
+        paint: {
+          "line-color": "#0891b2",
+          "line-width": 4,
+          "line-opacity": 0.72,
+        },
+      });
+
       setIsMapReady(true);
       map.resize();
     };
@@ -481,6 +627,34 @@ export function OperationsMap({
         : "none";
     }
   }, [isMapReady, visibility.office]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map || !isMapReady) {
+      return;
+    }
+
+    const source = map.getSource(
+      TRACKING_HISTORY_SOURCE_ID,
+    ) as mapboxgl.GeoJSONSource | undefined;
+
+    source?.setData(
+      createTrackingHistoryFeatureCollection(trackingPaths),
+    );
+
+    if (map.getLayer(TRACKING_HISTORY_LAYER_ID)) {
+      map.setLayoutProperty(
+        TRACKING_HISTORY_LAYER_ID,
+        "visibility",
+        visibility.liveTechnicians ? "visible" : "none",
+      );
+    }
+  }, [
+    isMapReady,
+    trackingPaths,
+    visibility.liveTechnicians,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -608,9 +782,82 @@ export function OperationsMap({
       });
     }
 
+    if (visibility.liveTechnicians) {
+      liveTechnicians.forEach((technician) => {
+        if (
+          !isValidCoordinate(
+            technician.latitude,
+            technician.longitude,
+          )
+        ) {
+          return;
+        }
+
+        const marker = new mapboxgl.Marker({
+          element: createLiveTechnicianMarkerElement(
+            technician.isStale,
+            technician.isMock,
+          ),
+        })
+          .setLngLat([
+            technician.longitude,
+            technician.latitude,
+          ])
+          .setPopup(
+            new mapboxgl.Popup({
+              offset: 20,
+            }).setDOMContent(
+              createPopupContent(
+                technician.technicianName,
+                [
+                  {
+                    label: "Tugas",
+                    value: technician.clientName,
+                  },
+                  {
+                    label: "Status",
+                    value: technician.isMock
+                      ? "Mock location"
+                      : technician.isStale
+                        ? "Lokasi terlambat"
+                        : "Aktif",
+                  },
+                  {
+                    label: "Akurasi",
+                    value: `±${Math.round(
+                      technician.accuracyMeters,
+                    )} meter`,
+                  },
+                  {
+                    label: "Kecepatan",
+                    value: formatSpeed(technician.speedMps),
+                  },
+                  {
+                    label: "Diterima",
+                    value: formatLiveTime(
+                      technician.receivedAt,
+                    ),
+                  },
+                ],
+                technician.isMock
+                  ? "#dc2626"
+                  : technician.isStale
+                    ? "#b45309"
+                    : "#0e7490",
+              ),
+            ),
+          )
+          .addTo(map);
+
+        dynamicMarkersRef.current.push(marker);
+      });
+    }
+
     if (
       !hasAutoFittedRef.current &&
-      (assignments.length > 0 || attendancePoints.length > 0)
+      (assignments.length > 0 ||
+        attendancePoints.length > 0 ||
+        liveTechnicians.length > 0)
     ) {
       hasAutoFittedRef.current = true;
       window.requestAnimationFrame(fitVisiblePoints);
@@ -620,12 +867,14 @@ export function OperationsMap({
   }, [
     assignments,
     attendancePoints,
+    liveTechnicians,
     clearDynamicMarkers,
     fitVisiblePoints,
     isMapReady,
     visibility.activeAssignments,
     visibility.attendance,
     visibility.completedAssignments,
+    visibility.liveTechnicians,
   ]);
 
   if (!accessToken) {
@@ -658,7 +907,7 @@ export function OperationsMap({
   <div
     ref={mapContainerRef}
     className="h-full w-full"
-    aria-label="Peta pemantauan penugasan dan presensi teknisi"
+    aria-label="Peta pemantauan penugasan, presensi, dan posisi realtime teknisi"
   />
 
       {!isMapReady ? (

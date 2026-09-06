@@ -1,0 +1,21 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">BTI Staff</title>
+  <desc id="description">
+    Ikon aplikasi presensi teknisi BTI
+  </desc>
+  <rect
+    width="512"
+    height="512"
+    rx="112"
+    fill="#2563eb"
+  />
+  <path
+    d="M146 132h136c62 0 100 30 100 82 0 31-16 54-43 67 35 12 55 39 55 75 0 58-43 92-115 92H146V132Zm76 62v60h54c21 0 33-10 33-30 0-20-12-30-35-30h-52Zm0 116v76h61c25 0 38-13 38-38 0-25-14-38-42-38h-57Z"
+    fill="#ffffff"
+  />
+</svg>

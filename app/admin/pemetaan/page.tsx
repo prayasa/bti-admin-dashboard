@@ -27,7 +27,9 @@ import { MapSummary } from "@/components/pemetaan/map-summary";
 import {
   OperationsMap,
   type AttendanceMapPoint,
+  type LiveTechnicianPoint,
   type MapAssignmentPoint,
+  type TrackingRoutePath,
 } from "@/components/pemetaan/operations-map";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +49,7 @@ interface TechnicianRelation {
 
 interface AssignmentDatabaseRow {
   id_tugas: string;
+  id_teknisi: string;
   nama_klien: string;
   alamat_klien: string;
   latitude_klien: number | string | null;
@@ -65,6 +68,50 @@ interface AttendanceDatabaseRow {
   teknisi: TechnicianRelation | TechnicianRelation[] | null;
 }
 
+interface LiveLocationDatabaseRow {
+  technician_id: string;
+  assignment_id: string;
+  tracking_session_id: string;
+  latitude: number | string;
+  longitude: number | string;
+  accuracy_meters: number | string;
+  speed_mps: number | string | null;
+  bearing_degrees: number | string | null;
+  is_mock: boolean | null;
+  recorded_at: string;
+  received_at: string;
+  updated_at: string;
+}
+
+interface TrackingSessionDatabaseRow {
+  id_session: string;
+  assignment_id: string;
+  technician_id: string;
+  status: string;
+  started_at: string;
+  last_location_at: string | null;
+}
+
+interface TrackingHistoryDatabaseRow {
+  tracking_session_id: string;
+  longitude: number | string;
+  latitude: number | string;
+  recorded_at: string;
+}
+
+interface MobileConfigDatabaseRow {
+  tracking_stale_after_ms: number | string | null;
+}
+
+interface TrackingSessionView {
+  sessionId: string;
+  assignmentId: string;
+  technicianName: string;
+  clientName: string;
+  startedAt: string;
+  lastLocationAt: string | null;
+}
+
 type RealtimeStatus =
   | "CONNECTING"
   | "SUBSCRIBED"
@@ -77,7 +124,12 @@ const initialVisibility: MapLayerVisibility = {
   attendance: true,
   activeAssignments: true,
   completedAssignments: true,
+  liveTechnicians: true,
 };
+
+const DEFAULT_TRACKING_STALE_AFTER_MS = 120_000;
+const FALLBACK_REFRESH_INTERVAL_MS = 30_000;
+const MAX_TRACKING_HISTORY_ROWS = 2_000;
 
 function getTechnicianName(
   relation: TechnicianRelation | TechnicianRelation[] | null,
@@ -143,12 +195,66 @@ function normalizeLogType(type: string) {
   }
 }
 
+function normalizePositiveNumber(
+  value: number | string | null,
+  fallback: number,
+) {
+  const normalized = Number(value);
+
+  return Number.isFinite(normalized) && normalized > 0
+    ? normalized
+    : fallback;
+}
+
+function getLiveStatus(
+  location: LiveTechnicianPoint | undefined,
+) {
+  if (!location) {
+    return {
+      label: "Menunggu GPS",
+      className:
+        "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300",
+    };
+  }
+
+  if (location.isMock) {
+    return {
+      label: "Mock location",
+      className:
+        "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300",
+    };
+  }
+
+  if (location.isStale) {
+    return {
+      label: "Terlambat",
+      className:
+        "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300",
+    };
+  }
+
+  return {
+    label: "Live",
+    className:
+      "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-300",
+  };
+}
+
 export default function SpatialMappingPage() {
   const [assignments, setAssignments] = useState<
     MapAssignmentPoint[]
   >([]);
   const [attendancePoints, setAttendancePoints] = useState<
     AttendanceMapPoint[]
+  >([]);
+  const [liveTechnicians, setLiveTechnicians] = useState<
+    LiveTechnicianPoint[]
+  >([]);
+  const [trackingSessions, setTrackingSessions] = useState<
+    TrackingSessionView[]
+  >([]);
+  const [trackingPaths, setTrackingPaths] = useState<
+    TrackingRoutePath[]
   >([]);
   const [visibility, setVisibility] =
     useState<MapLayerVisibility>(initialVisibility);
@@ -163,6 +269,7 @@ export default function SpatialMappingPage() {
     ReturnType<typeof setTimeout> | null
   >(null);
 
+
   const fetchMapData = useCallback(
     async (showLoading = true) => {
       if (showLoading) {
@@ -171,151 +278,445 @@ export default function SpatialMappingPage() {
 
       const dayRange = getPontianakDayRange();
 
-      const [assignmentsResult, attendanceResult] =
-        await Promise.all([
-          supabase
-            .from("tiket_tugas")
-            .select(
-              `
-                id_tugas,
-                nama_klien,
-                alamat_klien,
-                latitude_klien,
-                longitude_klien,
-                status,
-                teknisi (nama_lengkap)
-              `,
-            )
-            .order("created_at", { ascending: false }),
-          supabase
-            .from("log_presensi")
-            .select(
-              `
-                id_absen,
-                latitude_aktual,
-                longitude_aktual,
-                is_valid,
-                tipe_log,
-                waktu_log,
-                teknisi (nama_lengkap)
-              `,
-            )
-            .gte("waktu_log", dayRange.start)
-            .lt("waktu_log", dayRange.end)
-            .not("latitude_aktual", "is", null)
-            .not("longitude_aktual", "is", null)
-            .neq("latitude_aktual", 0)
-            .neq("longitude_aktual", 0)
-            .order("waktu_log", { ascending: false }),
-        ]);
+      const [
+        assignmentsResult,
+        attendanceResult,
+        liveLocationsResult,
+        trackingSessionsResult,
+        configResult,
+      ] = await Promise.all([
+        supabase
+          .from("tiket_tugas")
+          .select(
+            `
+              id_tugas,
+              id_teknisi,
+              nama_klien,
+              alamat_klien,
+              latitude_klien,
+              longitude_klien,
+              status,
+              teknisi (nama_lengkap)
+            `,
+          )
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("log_presensi")
+          .select(
+            `
+              id_absen,
+              latitude_aktual,
+              longitude_aktual,
+              is_valid,
+              tipe_log,
+              waktu_log,
+              teknisi (nama_lengkap)
+            `,
+          )
+          .gte("waktu_log", dayRange.start)
+          .lt("waktu_log", dayRange.end)
+          .not("latitude_aktual", "is", null)
+          .not("longitude_aktual", "is", null)
+          .neq("latitude_aktual", 0)
+          .neq("longitude_aktual", 0)
+          .order("waktu_log", { ascending: false }),
+        supabase
+          .from("technician_live_locations")
+          .select(
+            `
+              technician_id,
+              assignment_id,
+              tracking_session_id,
+              latitude,
+              longitude,
+              accuracy_meters,
+              speed_mps,
+              bearing_degrees,
+              is_mock,
+              recorded_at,
+              received_at,
+              updated_at
+            `,
+          )
+          .order("received_at", { ascending: false }),
+        supabase
+          .from("assignment_tracking_sessions")
+          .select(
+            `
+              id_session,
+              assignment_id,
+              technician_id,
+              status,
+              started_at,
+              last_location_at
+            `,
+          )
+          .eq("status", "ACTIVE")
+          .order("started_at", { ascending: false }),
+        supabase
+          .from("bti_mobile_config")
+          .select("tracking_stale_after_ms")
+          .eq("id", 1)
+          .limit(1),
+      ]);
 
       let hasError = false;
 
-      if (assignmentsResult.error) {
+      const baseErrors = [
+        assignmentsResult.error,
+        attendanceResult.error,
+        liveLocationsResult.error,
+        trackingSessionsResult.error,
+        configResult.error,
+      ].flatMap((error) => (error ? [error] : []));
+
+      if (baseErrors.length > 0) {
         hasError = true;
         console.error(
-          "Gagal mengambil titik penugasan:",
-          assignmentsResult.error,
+          "Pemetaan query errors:",
+          baseErrors.map((error) => error.message),
         );
-        toast.error("Lokasi penugasan gagal dimuat.");
-      } else {
-        const rows =
-          (assignmentsResult.data as
-            | AssignmentDatabaseRow[]
-            | null) ?? [];
 
-        const normalizedAssignments = rows
-          .map((assignment): MapAssignmentPoint | null => {
-            const latitude = Number(
-              assignment.latitude_klien,
-            );
-            const longitude = Number(
-              assignment.longitude_klien,
+        if (showLoading) {
+          toast.error(
+            "Sebagian data pemetaan gagal dimuat.",
+            {
+              description:
+                "Periksa koneksi dan izin database, lalu coba kembali.",
+            },
+          );
+        }
+      }
+
+      const assignmentRows =
+        (assignmentsResult.data as
+          | AssignmentDatabaseRow[]
+          | null) ?? [];
+
+      const assignmentById = new Map(
+        assignmentRows.map((assignment) => [
+          String(assignment.id_tugas),
+          assignment,
+        ]),
+      );
+
+      const normalizedAssignments = assignmentRows
+        .map((assignment): MapAssignmentPoint | null => {
+          const latitude = Number(
+            assignment.latitude_klien,
+          );
+          const longitude = Number(
+            assignment.longitude_klien,
+          );
+
+          if (
+            !Number.isFinite(latitude) ||
+            !Number.isFinite(longitude) ||
+            (latitude === 0 && longitude === 0)
+          ) {
+            return null;
+          }
+
+          return {
+            id: String(assignment.id_tugas),
+            technicianName: getTechnicianName(
+              assignment.teknisi,
+            ),
+            clientName: assignment.nama_klien,
+            clientAddress: assignment.alamat_klien,
+            latitude,
+            longitude,
+            status: assignment.status ?? "Pending",
+          };
+        })
+        .filter(
+          (
+            assignment,
+          ): assignment is MapAssignmentPoint =>
+            assignment !== null,
+        );
+
+      const attendanceRows =
+        (attendanceResult.data as
+          | AttendanceDatabaseRow[]
+          | null) ?? [];
+
+      const normalizedAttendance = attendanceRows
+        .map((attendance): AttendanceMapPoint | null => {
+          const latitude = Number(
+            attendance.latitude_aktual,
+          );
+          const longitude = Number(
+            attendance.longitude_aktual,
+          );
+
+          if (
+            !Number.isFinite(latitude) ||
+            !Number.isFinite(longitude) ||
+            (latitude === 0 && longitude === 0)
+          ) {
+            return null;
+          }
+
+          return {
+            id: String(attendance.id_absen),
+            technicianName: getTechnicianName(
+              attendance.teknisi,
+            ),
+            latitude,
+            longitude,
+            isValid: Boolean(attendance.is_valid),
+            type: normalizeLogType(
+              attendance.tipe_log ?? "Presensi",
+            ),
+            loggedAt: attendance.waktu_log,
+          };
+        })
+        .filter(
+          (
+            attendance,
+          ): attendance is AttendanceMapPoint =>
+            attendance !== null,
+        );
+
+      const configRows =
+        (configResult.data as
+          | MobileConfigDatabaseRow[]
+          | null) ?? [];
+
+      const staleAfterMs = normalizePositiveNumber(
+        configRows[0]?.tracking_stale_after_ms ?? null,
+        DEFAULT_TRACKING_STALE_AFTER_MS,
+      );
+
+      const liveRows =
+        (liveLocationsResult.data as
+          | LiveLocationDatabaseRow[]
+          | null) ?? [];
+
+      const normalizedLiveLocations = liveRows
+        .map(
+          (
+            location,
+          ): LiveTechnicianPoint | null => {
+            const latitude = Number(location.latitude);
+            const longitude = Number(location.longitude);
+            const accuracyMeters = Number(
+              location.accuracy_meters,
             );
 
             if (
               !Number.isFinite(latitude) ||
               !Number.isFinite(longitude) ||
+              !Number.isFinite(accuracyMeters) ||
+              accuracyMeters <= 0 ||
               (latitude === 0 && longitude === 0)
             ) {
               return null;
             }
 
+            const assignment = assignmentById.get(
+              String(location.assignment_id),
+            );
+
+            const receivedAt =
+              location.received_at ||
+              location.updated_at ||
+              location.recorded_at;
+
+            const receivedTime = new Date(
+              receivedAt,
+            ).getTime();
+
+            const ageMs = Number.isNaN(receivedTime)
+              ? Number.POSITIVE_INFINITY
+              : Math.max(0, Date.now() - receivedTime);
+
+            const speed = Number(location.speed_mps);
+            const bearing = Number(
+              location.bearing_degrees,
+            );
+
             return {
-              id: assignment.id_tugas,
-              technicianName: getTechnicianName(
-                assignment.teknisi,
+              technicianId: String(
+                location.technician_id,
               ),
-              clientName: assignment.nama_klien,
-              clientAddress: assignment.alamat_klien,
+              assignmentId: String(
+                location.assignment_id,
+              ),
+              sessionId: String(
+                location.tracking_session_id,
+              ),
+              technicianName: assignment
+                ? getTechnicianName(assignment.teknisi)
+                : "Teknisi tidak tersedia",
+              clientName:
+                assignment?.nama_klien ??
+                "Tugas tidak tersedia",
               latitude,
               longitude,
-              status: assignment.status ?? "Pending",
+              accuracyMeters,
+              speedMps:
+                location.speed_mps !== null &&
+                Number.isFinite(speed)
+                  ? Math.max(0, speed)
+                  : null,
+              bearingDegrees:
+                location.bearing_degrees !== null &&
+                Number.isFinite(bearing)
+                  ? bearing
+                  : null,
+              isMock: Boolean(location.is_mock),
+              isStale: ageMs > staleAfterMs,
+              recordedAt: location.recorded_at,
+              receivedAt,
             };
-          })
-          .filter(
-            (
-              assignment,
-            ): assignment is MapAssignmentPoint =>
-              assignment !== null,
-          );
-
-        setAssignments(normalizedAssignments);
-      }
-
-      if (attendanceResult.error) {
-        hasError = true;
-        console.error(
-          "Gagal mengambil titik presensi:",
-          attendanceResult.error,
+          },
+        )
+        .filter(
+          (
+            location,
+          ): location is LiveTechnicianPoint =>
+            location !== null,
         );
-        toast.error("Lokasi presensi hari ini gagal dimuat.");
-      } else {
-        const rows =
-          (attendanceResult.data as
-            | AttendanceDatabaseRow[]
-            | null) ?? [];
 
-        const normalizedAttendance = rows
-          .map((attendance): AttendanceMapPoint | null => {
-            const latitude = Number(
-              attendance.latitude_aktual,
-            );
-            const longitude = Number(
-              attendance.longitude_aktual,
-            );
+      const sessionRows =
+        (trackingSessionsResult.data as
+          | TrackingSessionDatabaseRow[]
+          | null) ?? [];
 
-            if (
-              !Number.isFinite(latitude) ||
-              !Number.isFinite(longitude) ||
-              (latitude === 0 && longitude === 0)
-            ) {
-              return null;
-            }
-
-            return {
-              id: attendance.id_absen,
-              technicianName: getTechnicianName(
-                attendance.teknisi,
-              ),
-              latitude,
-              longitude,
-              isValid: Boolean(attendance.is_valid),
-              type: normalizeLogType(
-                attendance.tipe_log ?? "Presensi",
-              ),
-              loggedAt: attendance.waktu_log,
-            };
-          })
-          .filter(
-            (
-              attendance,
-            ): attendance is AttendanceMapPoint =>
-              attendance !== null,
+      const normalizedSessions = sessionRows.map(
+        (session): TrackingSessionView => {
+          const assignment = assignmentById.get(
+            String(session.assignment_id),
           );
 
-        setAttendancePoints(normalizedAttendance);
+          return {
+            sessionId: String(session.id_session),
+            assignmentId: String(
+              session.assignment_id,
+            ),
+            technicianName: assignment
+              ? getTechnicianName(assignment.teknisi)
+              : "Teknisi tidak tersedia",
+            clientName:
+              assignment?.nama_klien ??
+              "Tugas tidak tersedia",
+            startedAt: session.started_at,
+            lastLocationAt: session.last_location_at,
+          };
+        },
+      );
+
+      let historyRows: TrackingHistoryDatabaseRow[] = [];
+
+      if (
+        !trackingSessionsResult.error &&
+        sessionRows.length > 0
+      ) {
+        const sessionIds = sessionRows.map((session) =>
+          String(session.id_session),
+        );
+
+        const historyResult = await supabase
+          .from("technician_location_history")
+          .select(
+            `
+              tracking_session_id,
+              longitude,
+              latitude,
+              recorded_at
+            `,
+          )
+          .in("tracking_session_id", sessionIds)
+          .order("recorded_at", { ascending: false })
+          .limit(MAX_TRACKING_HISTORY_ROWS);
+
+        if (historyResult.error) {
+          hasError = true;
+          console.error(
+            "Gagal mengambil riwayat tracking:",
+            historyResult.error,
+          );
+        } else {
+          historyRows =
+            (historyResult.data as
+              | TrackingHistoryDatabaseRow[]
+              | null) ?? [];
+        }
       }
+
+      const coordinatesBySession = new Map<
+        string,
+        Array<[number, number]>
+      >();
+
+      historyRows
+        .slice()
+        .reverse()
+        .forEach((history) => {
+          const latitude = Number(history.latitude);
+          const longitude = Number(history.longitude);
+
+          if (
+            !Number.isFinite(latitude) ||
+            !Number.isFinite(longitude) ||
+            (latitude === 0 && longitude === 0)
+          ) {
+            return;
+          }
+
+          const sessionId = String(
+            history.tracking_session_id,
+          );
+
+          const coordinates =
+            coordinatesBySession.get(sessionId) ?? [];
+
+          coordinates.push([longitude, latitude]);
+          coordinatesBySession.set(
+            sessionId,
+            coordinates,
+          );
+        });
+
+      normalizedLiveLocations.forEach((location) => {
+        const coordinates =
+          coordinatesBySession.get(location.sessionId) ?? [];
+
+        const lastCoordinate =
+          coordinates[coordinates.length - 1];
+
+        if (
+          !lastCoordinate ||
+          lastCoordinate[0] !== location.longitude ||
+          lastCoordinate[1] !== location.latitude
+        ) {
+          coordinates.push([
+            location.longitude,
+            location.latitude,
+          ]);
+        }
+
+        coordinatesBySession.set(
+          location.sessionId,
+          coordinates,
+        );
+      });
+
+      const normalizedPaths: TrackingRoutePath[] =
+        Array.from(coordinatesBySession.entries())
+          .filter(([, coordinates]) => coordinates.length >= 2)
+          .map(([sessionId, coordinates]) => ({
+            sessionId,
+            coordinates,
+          }));
+
+      setAssignments(normalizedAssignments);
+      setAttendancePoints(normalizedAttendance);
+      setLiveTechnicians(normalizedLiveLocations);
+      setTrackingSessions(normalizedSessions);
+      setTrackingPaths(normalizedPaths);
 
       if (!hasError) {
         setLastUpdated(new Date());
@@ -328,6 +729,13 @@ export default function SpatialMappingPage() {
 
   useEffect(() => {
     void fetchMapData();
+
+    const fallbackRefreshInterval = window.setInterval(
+      () => {
+        void fetchMapData(false);
+      },
+      FALLBACK_REFRESH_INTERVAL_MS,
+    );
 
     const scheduleRefresh = () => {
       if (refreshTimerRef.current) {
@@ -359,11 +767,33 @@ export default function SpatialMappingPage() {
         },
         scheduleRefresh,
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "technician_live_locations",
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "assignment_tracking_sessions",
+        },
+        scheduleRefresh,
+      )
       .subscribe((status) => {
         setRealtimeStatus(status as RealtimeStatus);
       });
 
     return () => {
+      window.clearInterval(
+        fallbackRefreshInterval,
+      );
+
       if (refreshTimerRef.current) {
         clearTimeout(refreshTimerRef.current);
       }
@@ -385,12 +815,28 @@ export default function SpatialMappingPage() {
       (attendance) => attendance.isValid,
     ).length;
 
+    const liveTracking = liveTechnicians.filter(
+      (technician) =>
+        !technician.isStale && !technician.isMock,
+    ).length;
+
+    const trackingWarnings = liveTechnicians.filter(
+      (technician) =>
+        technician.isStale || technician.isMock,
+    ).length;
+
     return {
       activeAssignments,
       completedAssignments,
       validAttendance,
+      liveTracking,
+      trackingWarnings,
     };
-  }, [assignments, attendancePoints]);
+  }, [
+    assignments,
+    attendancePoints,
+    liveTechnicians,
+  ]);
 
   const handleToggleLayer = (layer: MapLayerKey) => {
     setVisibility((current) => ({
@@ -416,8 +862,8 @@ export default function SpatialMappingPage() {
           </h1>
 
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Pantau titik penugasan dan posisi teknisi ketika
-            melakukan presensi di wilayah operasional Pontianak.
+            Pantau penugasan, presensi, posisi terkini teknisi,
+            dan jejak perjalanan secara realtime.
           </p>
         </div>
 
@@ -493,6 +939,8 @@ export default function SpatialMappingPage() {
             <OperationsMap
               assignments={assignments}
               attendancePoints={attendancePoints}
+              liveTechnicians={liveTechnicians}
+              trackingPaths={trackingPaths}
               visibility={visibility}
             />
 
@@ -516,9 +964,118 @@ export default function SpatialMappingPage() {
                         summary.activeAssignments,
                       completedAssignments:
                         summary.completedAssignments,
+                      liveTechnicians:
+                        liveTechnicians.length,
                     }}
                     onToggle={handleToggleLayer}
                   />
+                </div>
+              </div>
+
+              <div className="border-b border-border p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-foreground">
+                      Pelacakan aktif
+                    </h2>
+
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Posisi terakhir teknisi lapangan
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <Badge
+                      variant="outline"
+                      className="border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-300"
+                    >
+                      {summary.liveTracking} live
+                    </Badge>
+
+                    {summary.trackingWarnings > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                      >
+                        {summary.trackingWarnings} perhatian
+                      </Badge>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {isFetching ? (
+                    Array.from({ length: 3 }).map((_, index) => (
+                      <div
+                        key={index}
+                        className="rounded-md border border-border bg-background p-3"
+                      >
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="mt-2 h-3 w-24" />
+                      </div>
+                    ))
+                  ) : trackingSessions.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border p-5 text-center">
+                      <MapPinned
+                        className="mx-auto size-6 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+
+                      <p className="mt-2 text-sm font-medium text-foreground">
+                        Tidak ada tracking aktif
+                      </p>
+
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Sesi akan muncul setelah teknisi memulai
+                        pengerjaan.
+                      </p>
+                    </div>
+                  ) : (
+                    trackingSessions.map((session) => {
+                      const location = liveTechnicians.find(
+                        (item) =>
+                          item.sessionId === session.sessionId,
+                      );
+
+                      const status = getLiveStatus(location);
+
+                      return (
+                        <div
+                          key={session.sessionId}
+                          className="rounded-md border border-border bg-background p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-foreground">
+                                {session.technicianName}
+                              </p>
+
+                              <p className="mt-1 truncate text-xs text-muted-foreground">
+                                {session.clientName}
+                              </p>
+                            </div>
+
+                            <Badge
+                              variant="outline"
+                              className={status.className}
+                            >
+                              {status.label}
+                            </Badge>
+                          </div>
+
+                          <p className="mt-2 text-[11px] tabular-nums text-muted-foreground">
+                            {location
+                              ? `Diterima ${formatTime(
+                                  location.receivedAt,
+                                )} WIB · ±${Math.round(
+                                  location.accuracyMeters,
+                                )} m`
+                              : "Belum ada koordinat yang diterima"}
+                          </p>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 

@@ -294,6 +294,21 @@ export default function AssignmentManagementPage() {
   const handleSaveAssignment = async (
     payload: AssignmentPayload,
   ) => {
+    if (
+      editingAssignment &&
+      editingAssignment.status !== "Pending"
+    ) {
+      toast.error("Tiket tidak dapat diubah.", {
+        description:
+          "Hanya tiket berstatus Menunggu yang dapat diedit.",
+      });
+
+      setEditingAssignment(null);
+      setFormRevision((revision) => revision + 1);
+      await fetchData(false);
+      return;
+    }
+
     setIsSaving(true);
 
     const databasePayload = {
@@ -309,9 +324,14 @@ export default function AssignmentManagementPage() {
           .from("tiket_tugas")
           .update(databasePayload)
           .eq("id_tugas", editingAssignment.id)
+          .eq("status", "Pending")
+          .select("id_tugas")
+          .maybeSingle()
       : await supabase
           .from("tiket_tugas")
-          .insert([databasePayload]);
+          .insert([databasePayload])
+          .select("id_tugas")
+          .single();
 
     if (result.error) {
       console.error("Gagal menyimpan penugasan:", result.error);
@@ -324,6 +344,19 @@ export default function AssignmentManagementPage() {
         },
       );
 
+      setIsSaving(false);
+      return;
+    }
+
+    if (!result.data) {
+      toast.error("Tiket tidak lagi dapat diubah.", {
+        description:
+          "Status tiket telah berubah. Muat ulang data sebelum melanjutkan.",
+      });
+
+      setEditingAssignment(null);
+      setFormRevision((revision) => revision + 1);
+      await fetchData(false);
       setIsSaving(false);
       return;
     }
@@ -342,6 +375,14 @@ export default function AssignmentManagementPage() {
   };
 
   const handleEdit = (assignment: Assignment) => {
+    if (assignment.status !== "Pending") {
+      toast.error("Tiket tidak dapat diubah.", {
+        description:
+          "Tiket yang sedang diproses atau sudah selesai dikunci untuk menjaga konsistensi penugasan.",
+      });
+      return;
+    }
+
     setEditingAssignment(assignment);
     setFormRevision((revision) => revision + 1);
 
@@ -361,12 +402,26 @@ export default function AssignmentManagementPage() {
       return;
     }
 
+    if (assignmentToDelete.status !== "Pending") {
+      toast.error("Tiket tidak dapat dihapus.", {
+        description:
+          "Hanya tiket berstatus Menunggu yang dapat dihapus.",
+      });
+
+      setAssignmentToDelete(null);
+      await fetchData(false);
+      return;
+    }
+
     setIsDeleting(true);
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("tiket_tugas")
       .delete()
-      .eq("id_tugas", assignmentToDelete.id);
+      .eq("id_tugas", assignmentToDelete.id)
+      .eq("status", "Pending")
+      .select("id_tugas")
+      .maybeSingle();
 
     if (error) {
       console.error("Gagal menghapus penugasan:", error);
@@ -374,6 +429,18 @@ export default function AssignmentManagementPage() {
         description: error.message,
       });
 
+      setIsDeleting(false);
+      return;
+    }
+
+    if (!data) {
+      toast.error("Tiket tidak lagi dapat dihapus.", {
+        description:
+          "Status tiket telah berubah. Data akan dimuat ulang.",
+      });
+
+      setAssignmentToDelete(null);
+      await fetchData(false);
       setIsDeleting(false);
       return;
     }
@@ -675,7 +742,14 @@ export default function AssignmentManagementPage() {
                               handleEdit(assignment)
                             }
                             aria-label={`Edit tiket ${assignment.clientName}`}
-                            title="Edit tiket"
+                            title={
+                              assignment.status === "Pending"
+                                ? "Edit tiket"
+                                : "Tiket yang diproses atau selesai tidak dapat diedit"
+                            }
+                            disabled={
+                              assignment.status !== "Pending"
+                            }
                           >
                             <Pencil
                               className="size-4"
@@ -692,7 +766,14 @@ export default function AssignmentManagementPage() {
                               setAssignmentToDelete(assignment)
                             }
                             aria-label={`Hapus tiket ${assignment.clientName}`}
-                            title="Hapus tiket"
+                            title={
+                              assignment.status === "Pending"
+                                ? "Hapus tiket"
+                                : "Tiket yang diproses atau selesai tidak dapat dihapus"
+                            }
+                            disabled={
+                              assignment.status !== "Pending"
+                            }
                           >
                             <Trash2
                               className="size-4"
@@ -727,7 +808,8 @@ export default function AssignmentManagementPage() {
               <span className="font-medium text-foreground">
                 {assignmentToDelete?.clientName}
               </span>{" "}
-              akan dihapus secara permanen. Tindakan ini tidak dapat
+              akan dihapus secara permanen. Hanya tiket berstatus
+              Menunggu yang dapat dihapus. Tindakan ini tidak dapat
               dibatalkan.
             </DialogDescription>
           </DialogHeader>
