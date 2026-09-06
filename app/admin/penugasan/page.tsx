@@ -81,10 +81,14 @@ interface AssignmentDatabaseRow {
   longitude_klien: number | string;
   status: string | null;
   created_at: string | null;
-  teknisi: TechnicianRelation | TechnicianRelation[] | null;
+  teknisi:
+    | TechnicianRelation
+    | TechnicianRelation[]
+    | null;
 }
 
-interface Assignment extends EditableAssignment {
+interface Assignment
+  extends EditableAssignment {
   technicianName: string;
   status: string;
   createdAt: string | null;
@@ -100,13 +104,21 @@ function getTechnicianName(
   relation: AssignmentDatabaseRow["teknisi"],
 ) {
   if (Array.isArray(relation)) {
-    return relation[0]?.nama_lengkap ?? "Teknisi tidak tersedia";
+    return (
+      relation[0]?.nama_lengkap ??
+      "Teknisi tidak tersedia"
+    );
   }
 
-  return relation?.nama_lengkap ?? "Teknisi tidak tersedia";
+  return (
+    relation?.nama_lengkap ??
+    "Teknisi tidak tersedia"
+  );
 }
 
-function formatDateTime(value: string | null) {
+function formatDateTime(
+  value: string | null,
+) {
   if (!value) {
     return "Waktu tidak tersedia";
   }
@@ -135,34 +147,61 @@ function getStatusClassName(status: string) {
   switch (status) {
     case "Pending":
       return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300";
+
     case "On Process":
       return "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300";
+
     case "Success":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300";
+
     default:
       return "border-border bg-muted text-muted-foreground";
   }
 }
 
-export default function AssignmentManagementPage() {
-  const [assignments, setAssignments] = useState<Assignment[]>(
-    [],
+function canDeleteAssignment(
+  status: string,
+) {
+  return (
+    status === "Pending" ||
+    status === "Success"
   );
-  const [technicians, setTechnicians] = useState<
-    AssignmentTechnician[]
-  >([]);
-  const [editingAssignment, setEditingAssignment] =
-    useState<Assignment | null>(null);
-  const [assignmentToDelete, setAssignmentToDelete] =
-    useState<Assignment | null>(null);
+}
 
-  const [searchQuery, setSearchQuery] = useState("");
+export default function AssignmentManagementPage() {
+  const [assignments, setAssignments] =
+    useState<Assignment[]>([]);
+
+  const [technicians, setTechnicians] =
+    useState<AssignmentTechnician[]>([]);
+
+  const [
+    editingAssignment,
+    setEditingAssignment,
+  ] = useState<Assignment | null>(null);
+
+  const [
+    assignmentToDelete,
+    setAssignmentToDelete,
+  ] = useState<Assignment | null>(null);
+
+  const [searchQuery, setSearchQuery] =
+    useState("");
+
   const [statusFilter, setStatusFilter] =
     useState<StatusFilter>("all");
-  const [isFetching, setIsFetching] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [formRevision, setFormRevision] = useState(0);
+
+  const [isFetching, setIsFetching] =
+    useState(true);
+
+  const [isSaving, setIsSaving] =
+    useState(false);
+
+  const [isDeleting, setIsDeleting] =
+    useState(false);
+
+  const [formRevision, setFormRevision] =
+    useState(0);
 
   const fetchData = useCallback(
     async (showLoading = true) => {
@@ -170,36 +209,46 @@ export default function AssignmentManagementPage() {
         setIsFetching(true);
       }
 
-      const [techniciansResult, assignmentsResult] =
-        await Promise.all([
-          supabase
-            .from("teknisi")
-            .select("id, nama_lengkap")
-            .order("nama_lengkap", { ascending: true }),
-          supabase
-            .from("tiket_tugas")
-            .select(
-              `
-                id_tugas,
-                id_teknisi,
-                nama_klien,
-                alamat_klien,
-                latitude_klien,
-                longitude_klien,
-                status,
-                created_at,
-                teknisi (nama_lengkap)
-              `,
-            )
-            .order("created_at", { ascending: false }),
-        ]);
+      const [
+        techniciansResult,
+        assignmentsResult,
+      ] = await Promise.all([
+        supabase
+          .from("teknisi")
+          .select("id, nama_lengkap")
+          .order("nama_lengkap", {
+            ascending: true,
+          }),
+
+        supabase
+          .from("tiket_tugas")
+          .select(
+            `
+              id_tugas,
+              id_teknisi,
+              nama_klien,
+              alamat_klien,
+              latitude_klien,
+              longitude_klien,
+              status,
+              created_at,
+              teknisi (nama_lengkap)
+            `,
+          )
+          .order("created_at", {
+            ascending: false,
+          }),
+      ]);
 
       if (techniciansResult.error) {
         console.error(
           "Gagal mengambil teknisi:",
           techniciansResult.error,
         );
-        toast.error("Daftar teknisi gagal dimuat.");
+
+        toast.error(
+          "Daftar teknisi gagal dimuat.",
+        );
       } else {
         const rows =
           (techniciansResult.data as
@@ -219,7 +268,10 @@ export default function AssignmentManagementPage() {
           "Gagal mengambil penugasan:",
           assignmentsResult.error,
         );
-        toast.error("Daftar penugasan gagal dimuat.");
+
+        toast.error(
+          "Daftar penugasan gagal dimuat.",
+        );
       } else {
         const rows =
           (assignmentsResult.data as
@@ -229,16 +281,35 @@ export default function AssignmentManagementPage() {
         setAssignments(
           rows.map((assignment) => ({
             id: assignment.id_tugas,
-            technicianId: assignment.id_teknisi,
-            technicianName: getTechnicianName(
-              assignment.teknisi,
+
+            technicianId:
+              assignment.id_teknisi,
+
+            technicianName:
+              getTechnicianName(
+                assignment.teknisi,
+              ),
+
+            clientName:
+              assignment.nama_klien,
+
+            clientAddress:
+              assignment.alamat_klien,
+
+            latitude: Number(
+              assignment.latitude_klien,
             ),
-            clientName: assignment.nama_klien,
-            clientAddress: assignment.alamat_klien,
-            latitude: Number(assignment.latitude_klien),
-            longitude: Number(assignment.longitude_klien),
-            status: assignment.status ?? "Pending",
-            createdAt: assignment.created_at,
+
+            longitude: Number(
+              assignment.longitude_klien,
+            ),
+
+            status:
+              assignment.status ??
+              "Pending",
+
+            createdAt:
+              assignment.created_at,
           })),
         );
       }
@@ -252,40 +323,59 @@ export default function AssignmentManagementPage() {
     void fetchData();
   }, [fetchData]);
 
-  const filteredAssignments = useMemo(() => {
-    const normalizedQuery = searchQuery
-      .trim()
-      .toLocaleLowerCase("id-ID");
+  const filteredAssignments = useMemo(
+    () => {
+      const normalizedQuery =
+        searchQuery
+          .trim()
+          .toLocaleLowerCase("id-ID");
 
-    return assignments.filter((assignment) => {
-      const matchesStatus =
-        statusFilter === "all" ||
-        assignment.status === statusFilter;
+      return assignments.filter(
+        (assignment) => {
+          const matchesStatus =
+            statusFilter === "all" ||
+            assignment.status ===
+              statusFilter;
 
-      const matchesSearch =
-        !normalizedQuery ||
-        assignment.clientName
-          .toLocaleLowerCase("id-ID")
-          .includes(normalizedQuery) ||
-        assignment.clientAddress
-          .toLocaleLowerCase("id-ID")
-          .includes(normalizedQuery) ||
-        assignment.technicianName
-          .toLocaleLowerCase("id-ID")
-          .includes(normalizedQuery);
+          const matchesSearch =
+            !normalizedQuery ||
+            assignment.clientName
+              .toLocaleLowerCase("id-ID")
+              .includes(normalizedQuery) ||
+            assignment.clientAddress
+              .toLocaleLowerCase("id-ID")
+              .includes(normalizedQuery) ||
+            assignment.technicianName
+              .toLocaleLowerCase("id-ID")
+              .includes(normalizedQuery);
 
-      return matchesStatus && matchesSearch;
-    });
-  }, [assignments, searchQuery, statusFilter]);
+          return (
+            matchesStatus &&
+            matchesSearch
+          );
+        },
+      );
+    },
+    [
+      assignments,
+      searchQuery,
+      statusFilter,
+    ],
+  );
 
   const summary = useMemo(
     () => ({
       total: assignments.length,
+
       pending: assignments.filter(
-        (assignment) => assignment.status === "Pending",
+        (assignment) =>
+          assignment.status === "Pending",
       ).length,
+
       active: assignments.filter(
-        (assignment) => assignment.status === "On Process",
+        (assignment) =>
+          assignment.status ===
+          "On Process",
       ).length,
     }),
     [assignments],
@@ -298,13 +388,20 @@ export default function AssignmentManagementPage() {
       editingAssignment &&
       editingAssignment.status !== "Pending"
     ) {
-      toast.error("Tiket tidak dapat diubah.", {
-        description:
-          "Hanya tiket berstatus Menunggu yang dapat diedit.",
-      });
+      toast.error(
+        "Tiket tidak dapat diubah.",
+        {
+          description:
+            "Hanya tiket berstatus Menunggu yang dapat diedit.",
+        },
+      );
 
       setEditingAssignment(null);
-      setFormRevision((revision) => revision + 1);
+
+      setFormRevision(
+        (revision) => revision + 1,
+      );
+
       await fetchData(false);
       return;
     }
@@ -312,21 +409,34 @@ export default function AssignmentManagementPage() {
     setIsSaving(true);
 
     const databasePayload = {
-      id_teknisi: payload.technicianId,
-      nama_klien: payload.clientName,
-      alamat_klien: payload.clientAddress,
-      latitude_klien: payload.latitude,
-      longitude_klien: payload.longitude,
+      id_teknisi:
+        payload.technicianId,
+
+      nama_klien:
+        payload.clientName,
+
+      alamat_klien:
+        payload.clientAddress,
+
+      latitude_klien:
+        payload.latitude,
+
+      longitude_klien:
+        payload.longitude,
     };
 
     const result = editingAssignment
       ? await supabase
           .from("tiket_tugas")
           .update(databasePayload)
-          .eq("id_tugas", editingAssignment.id)
+          .eq(
+            "id_tugas",
+            editingAssignment.id,
+          )
           .eq("status", "Pending")
           .select("id_tugas")
           .maybeSingle()
+
       : await supabase
           .from("tiket_tugas")
           .insert([databasePayload])
@@ -334,13 +444,18 @@ export default function AssignmentManagementPage() {
           .single();
 
     if (result.error) {
-      console.error("Gagal menyimpan penugasan:", result.error);
+      console.error(
+        "Gagal menyimpan penugasan:",
+        result.error,
+      );
+
       toast.error(
         editingAssignment
           ? "Perubahan tiket gagal disimpan."
           : "Tiket penugasan gagal dibuat.",
         {
-          description: result.error.message,
+          description:
+            result.error.message,
         },
       );
 
@@ -349,13 +464,20 @@ export default function AssignmentManagementPage() {
     }
 
     if (!result.data) {
-      toast.error("Tiket tidak lagi dapat diubah.", {
-        description:
-          "Status tiket telah berubah. Muat ulang data sebelum melanjutkan.",
-      });
+      toast.error(
+        "Tiket tidak lagi dapat diubah.",
+        {
+          description:
+            "Status tiket telah berubah. Muat ulang data sebelum melanjutkan.",
+        },
+      );
 
       setEditingAssignment(null);
-      setFormRevision((revision) => revision + 1);
+
+      setFormRevision(
+        (revision) => revision + 1,
+      );
+
       await fetchData(false);
       setIsSaving(false);
       return;
@@ -368,23 +490,37 @@ export default function AssignmentManagementPage() {
     );
 
     setEditingAssignment(null);
-    setFormRevision((revision) => revision + 1);
+
+    setFormRevision(
+      (revision) => revision + 1,
+    );
 
     await fetchData(false);
     setIsSaving(false);
   };
 
-  const handleEdit = (assignment: Assignment) => {
-    if (assignment.status !== "Pending") {
-      toast.error("Tiket tidak dapat diubah.", {
-        description:
-          "Tiket yang sedang diproses atau sudah selesai dikunci untuk menjaga konsistensi penugasan.",
-      });
+  const handleEdit = (
+    assignment: Assignment,
+  ) => {
+    if (
+      assignment.status !== "Pending"
+    ) {
+      toast.error(
+        "Tiket tidak dapat diubah.",
+        {
+          description:
+            "Tiket yang sedang diproses atau sudah selesai dikunci untuk menjaga konsistensi penugasan.",
+        },
+      );
+
       return;
     }
 
     setEditingAssignment(assignment);
-    setFormRevision((revision) => revision + 1);
+
+    setFormRevision(
+      (revision) => revision + 1,
+    );
 
     window.scrollTo({
       top: 0,
@@ -394,7 +530,10 @@ export default function AssignmentManagementPage() {
 
   const handleCancelEdit = () => {
     setEditingAssignment(null);
-    setFormRevision((revision) => revision + 1);
+
+    setFormRevision(
+      (revision) => revision + 1,
+    );
   };
 
   const handleDelete = async () => {
@@ -402,11 +541,18 @@ export default function AssignmentManagementPage() {
       return;
     }
 
-    if (assignmentToDelete.status !== "Pending") {
-      toast.error("Tiket tidak dapat dihapus.", {
-        description:
-          "Hanya tiket berstatus Menunggu yang dapat dihapus.",
-      });
+    if (
+      !canDeleteAssignment(
+        assignmentToDelete.status,
+      )
+    ) {
+      toast.error(
+        "Tiket tidak dapat dihapus.",
+        {
+          description:
+            "Tiket yang sedang diproses dikunci sampai teknisi menyelesaikan pekerjaan.",
+        },
+      );
 
       setAssignmentToDelete(null);
       await fetchData(false);
@@ -415,29 +561,59 @@ export default function AssignmentManagementPage() {
 
     setIsDeleting(true);
 
-    const { data, error } = await supabase
-      .from("tiket_tugas")
-      .delete()
-      .eq("id_tugas", assignmentToDelete.id)
-      .eq("status", "Pending")
-      .select("id_tugas")
-      .maybeSingle();
+    const { data, error } =
+      await supabase.rpc(
+        "admin_delete_assignment",
+        {
+          p_assignment_id:
+            assignmentToDelete.id,
+        },
+      );
 
     if (error) {
-      console.error("Gagal menghapus penugasan:", error);
-      toast.error("Tiket penugasan gagal dihapus.", {
-        description: error.message,
-      });
+      console.error(
+        "Gagal menghapus penugasan:",
+        error,
+      );
+
+      toast.error(
+        "Tiket penugasan gagal dihapus.",
+        {
+          description: error.message,
+        },
+      );
 
       setIsDeleting(false);
       return;
     }
 
-    if (!data) {
-      toast.error("Tiket tidak lagi dapat dihapus.", {
-        description:
-          "Status tiket telah berubah. Data akan dimuat ulang.",
-      });
+    const deleteResult =
+      data &&
+      typeof data === "object" &&
+      !Array.isArray(data)
+        ? (data as Record<
+            string,
+            unknown
+          >)
+        : null;
+
+    if (
+      !deleteResult ||
+      deleteResult.accepted !== true
+    ) {
+      const responseMessage =
+        typeof deleteResult?.message ===
+        "string"
+          ? deleteResult.message
+          : "Status tiket telah berubah. Data akan dimuat ulang.";
+
+      toast.error(
+        "Tiket tidak dapat dihapus.",
+        {
+          description:
+            responseMessage,
+        },
+      );
 
       setAssignmentToDelete(null);
       await fetchData(false);
@@ -445,12 +621,20 @@ export default function AssignmentManagementPage() {
       return;
     }
 
-    if (editingAssignment?.id === assignmentToDelete.id) {
+    if (
+      editingAssignment?.id ===
+      assignmentToDelete.id
+    ) {
       setEditingAssignment(null);
-      setFormRevision((revision) => revision + 1);
+
+      setFormRevision(
+        (revision) => revision + 1,
+      );
     }
 
-    toast.success("Tiket penugasan telah dihapus.");
+    toast.success(
+      "Tiket penugasan telah dihapus.",
+    );
 
     setAssignmentToDelete(null);
     await fetchData(false);
@@ -462,7 +646,10 @@ export default function AssignmentManagementPage() {
       <div className="flex flex-col gap-4 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            <Tickets className="size-4" aria-hidden="true" />
+            <Tickets
+              className="size-4"
+              aria-hidden="true"
+            />
             Operasional lapangan
           </div>
 
@@ -471,15 +658,19 @@ export default function AssignmentManagementPage() {
           </h1>
 
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Buat tiket pekerjaan, tentukan teknisi, dan pastikan
-            koordinat klien tersimpan dengan akurat.
+            Buat tiket pekerjaan,
+            tentukan teknisi, dan
+            pastikan koordinat klien
+            tersimpan dengan akurat.
           </p>
         </div>
 
         <Button
           type="button"
           variant="outline"
-          onClick={() => void fetchData()}
+          onClick={() =>
+            void fetchData()
+          }
           disabled={isFetching}
         >
           <RefreshCw
@@ -501,6 +692,7 @@ export default function AssignmentManagementPage() {
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Total tiket
               </p>
+
               <p className="mt-1 text-2xl font-semibold tabular-nums">
                 {summary.total}
               </p>
@@ -519,6 +711,7 @@ export default function AssignmentManagementPage() {
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Menunggu
               </p>
+
               <p className="mt-1 text-2xl font-semibold tabular-nums">
                 {summary.pending}
               </p>
@@ -537,6 +730,7 @@ export default function AssignmentManagementPage() {
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Sedang diproses
               </p>
+
               <p className="mt-1 text-2xl font-semibold tabular-nums">
                 {summary.active}
               </p>
@@ -551,7 +745,9 @@ export default function AssignmentManagementPage() {
       </div>
 
       <AssignmentForm
-        key={`${editingAssignment?.id ?? "new"}-${formRevision}`}
+        key={`${
+          editingAssignment?.id ?? "new"
+        }-${formRevision}`}
         technicians={technicians}
         assignment={editingAssignment}
         isSaving={isSaving}
@@ -563,24 +759,32 @@ export default function AssignmentManagementPage() {
         <CardHeader className="border-b border-border">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <CardTitle>Daftar penugasan</CardTitle>
+              <CardTitle>
+                Daftar penugasan
+              </CardTitle>
+
               <CardDescription className="mt-1">
-                {filteredAssignments.length} dari{" "}
-                {assignments.length} tiket ditampilkan.
+                {
+                  filteredAssignments.length
+                }{" "}
+                dari {assignments.length} tiket
+                ditampilkan.
               </CardDescription>
             </div>
 
             <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto">
               <div className="relative min-w-0 sm:w-72">
                 <Search
-                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
                   aria-hidden="true"
                 />
 
                 <Input
                   value={searchQuery}
                   onChange={(event) =>
-                    setSearchQuery(event.target.value)
+                    setSearchQuery(
+                      event.target.value,
+                    )
                   }
                   placeholder="Cari klien, teknisi, atau alamat..."
                   className="pl-9"
@@ -591,7 +795,9 @@ export default function AssignmentManagementPage() {
               <Select
                 value={statusFilter}
                 onValueChange={(value) =>
-                  setStatusFilter(value as StatusFilter)
+                  setStatusFilter(
+                    value as StatusFilter,
+                  )
                 }
               >
                 <SelectTrigger
@@ -605,12 +811,15 @@ export default function AssignmentManagementPage() {
                   <SelectItem value="all">
                     Semua status
                   </SelectItem>
+
                   <SelectItem value="Pending">
                     Menunggu
                   </SelectItem>
+
                   <SelectItem value="On Process">
                     Diproses
                   </SelectItem>
+
                   <SelectItem value="Success">
                     Selesai
                   </SelectItem>
@@ -625,11 +834,26 @@ export default function AssignmentManagementPage() {
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-background">
                 <TableRow>
-                  <TableHead>Teknisi</TableHead>
-                  <TableHead>Klien dan lokasi</TableHead>
-                  <TableHead>Koordinat</TableHead>
-                  <TableHead>Dibuat</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    Teknisi
+                  </TableHead>
+
+                  <TableHead>
+                    Klien dan lokasi
+                  </TableHead>
+
+                  <TableHead>
+                    Koordinat
+                  </TableHead>
+
+                  <TableHead>
+                    Dibuat
+                  </TableHead>
+
+                  <TableHead>
+                    Status
+                  </TableHead>
+
                   <TableHead className="w-24 text-right">
                     Aksi
                   </TableHead>
@@ -638,30 +862,38 @@ export default function AssignmentManagementPage() {
 
               <TableBody>
                 {isFetching ? (
-                  Array.from({ length: 5 }).map((_, index) => (
+                  Array.from({
+                    length: 5,
+                  }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell>
                         <Skeleton className="h-4 w-32" />
                       </TableCell>
+
                       <TableCell>
                         <Skeleton className="h-4 w-44" />
                         <Skeleton className="mt-2 h-3 w-64" />
                       </TableCell>
+
                       <TableCell>
                         <Skeleton className="h-6 w-40" />
                       </TableCell>
+
                       <TableCell>
                         <Skeleton className="h-4 w-28" />
                       </TableCell>
+
                       <TableCell>
                         <Skeleton className="h-6 w-20" />
                       </TableCell>
+
                       <TableCell>
                         <Skeleton className="ml-auto h-8 w-20" />
                       </TableCell>
                     </TableRow>
                   ))
-                ) : filteredAssignments.length === 0 ? (
+                ) : filteredAssignments.length ===
+                  0 ? (
                   <TableRow>
                     <TableCell
                       colSpan={6}
@@ -674,116 +906,150 @@ export default function AssignmentManagementPage() {
                         />
 
                         <p className="mt-3 text-sm font-medium text-foreground">
-                          Penugasan tidak ditemukan
+                          Penugasan tidak
+                          ditemukan
                         </p>
 
                         <p className="mt-1 text-sm text-muted-foreground">
-                          Ubah kata pencarian atau filter status yang
+                          Ubah kata pencarian
+                          atau filter status yang
                           digunakan.
                         </p>
                       </div>
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredAssignments.map((assignment) => (
-                    <TableRow key={assignment.id}>
-                      <TableCell className="font-medium">
-                        {assignment.technicianName}
-                      </TableCell>
+                  filteredAssignments.map(
+                    (assignment) => (
+                      <TableRow
+                        key={assignment.id}
+                      >
+                        <TableCell className="font-medium">
+                          {
+                            assignment.technicianName
+                          }
+                        </TableCell>
 
-                      <TableCell>
-                        <div className="max-w-sm">
-                          <p className="font-medium text-foreground">
-                            {assignment.clientName}
-                          </p>
+                        <TableCell>
+                          <div className="max-w-sm">
+                            <p className="font-medium text-foreground">
+                              {
+                                assignment.clientName
+                              }
+                            </p>
 
-                          <p
-                            className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground"
-                            title={assignment.clientAddress}
-                          >
-                            {assignment.clientAddress}
-                          </p>
-                        </div>
-                      </TableCell>
+                            <p
+                              className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground"
+                              title={
+                                assignment.clientAddress
+                              }
+                            >
+                              {
+                                assignment.clientAddress
+                              }
+                            </p>
+                          </div>
+                        </TableCell>
 
-                      <TableCell>
-                        <div className="inline-flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                          <MapPin
-                            className="size-3.5"
-                            aria-hidden="true"
-                          />
-                          {assignment.latitude.toFixed(6)},{" "}
-                          {assignment.longitude.toFixed(6)}
-                        </div>
-                      </TableCell>
+                        <TableCell>
+                          <div className="inline-flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                            <MapPin
+                              className="size-3.5"
+                              aria-hidden="true"
+                            />
 
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        {formatDateTime(assignment.createdAt)}
-                      </TableCell>
+                            {assignment.latitude.toFixed(
+                              6,
+                            )}
+                            ,{" "}
+                            {assignment.longitude.toFixed(
+                              6,
+                            )}
+                          </div>
+                        </TableCell>
 
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={getStatusClassName(
-                            assignment.status,
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                          {formatDateTime(
+                            assignment.createdAt,
                           )}
-                        >
-                          {getStatusLabel(assignment.status)}
-                        </Badge>
-                      </TableCell>
+                        </TableCell>
 
-                      <TableCell>
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() =>
-                              handleEdit(assignment)
-                            }
-                            aria-label={`Edit tiket ${assignment.clientName}`}
-                            title={
-                              assignment.status === "Pending"
-                                ? "Edit tiket"
-                                : "Tiket yang diproses atau selesai tidak dapat diedit"
-                            }
-                            disabled={
-                              assignment.status !== "Pending"
-                            }
+                        <TableCell>
+                          <Badge
+                            variant="outline"
+                            className={getStatusClassName(
+                              assignment.status,
+                            )}
                           >
-                            <Pencil
-                              className="size-4"
-                              aria-hidden="true"
-                            />
-                          </Button>
+                            {getStatusLabel(
+                              assignment.status,
+                            )}
+                          </Badge>
+                        </TableCell>
 
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() =>
-                              setAssignmentToDelete(assignment)
-                            }
-                            aria-label={`Hapus tiket ${assignment.clientName}`}
-                            title={
-                              assignment.status === "Pending"
-                                ? "Hapus tiket"
-                                : "Tiket yang diproses atau selesai tidak dapat dihapus"
-                            }
-                            disabled={
-                              assignment.status !== "Pending"
-                            }
-                          >
-                            <Trash2
-                              className="size-4"
-                              aria-hidden="true"
-                            />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={() =>
+                                handleEdit(
+                                  assignment,
+                                )
+                              }
+                              aria-label={`Edit tiket ${assignment.clientName}`}
+                              title={
+                                assignment.status ===
+                                "Pending"
+                                  ? "Edit tiket"
+                                  : "Tiket yang diproses atau selesai tidak dapat diedit"
+                              }
+                              disabled={
+                                assignment.status !==
+                                "Pending"
+                              }
+                            >
+                              <Pencil
+                                className="size-4"
+                                aria-hidden="true"
+                              />
+                            </Button>
+
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() =>
+                                setAssignmentToDelete(
+                                  assignment,
+                                )
+                              }
+                              aria-label={`Hapus tiket ${assignment.clientName}`}
+                              title={
+                                canDeleteAssignment(
+                                  assignment.status,
+                                )
+                                  ? "Hapus tiket"
+                                  : "Tiket yang sedang diproses tidak dapat dihapus"
+                              }
+                              disabled={
+                                !canDeleteAssignment(
+                                  assignment.status,
+                                )
+                              }
+                            >
+                              <Trash2
+                                className="size-4"
+                                aria-hidden="true"
+                              />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ),
+                  )
                 )}
               </TableBody>
             </Table>
@@ -792,25 +1058,38 @@ export default function AssignmentManagementPage() {
       </Card>
 
       <Dialog
-        open={Boolean(assignmentToDelete)}
+        open={Boolean(
+          assignmentToDelete,
+        )}
         onOpenChange={(open) => {
-          if (!open && !isDeleting) {
-            setAssignmentToDelete(null);
+          if (
+            !open &&
+            !isDeleting
+          ) {
+            setAssignmentToDelete(
+              null,
+            );
           }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Hapus tiket penugasan?</DialogTitle>
+            <DialogTitle>
+              Hapus tiket penugasan?
+            </DialogTitle>
 
             <DialogDescription>
               Tiket untuk{" "}
               <span className="font-medium text-foreground">
-                {assignmentToDelete?.clientName}
+                {
+                  assignmentToDelete?.clientName
+                }
               </span>{" "}
-              akan dihapus secara permanen. Hanya tiket berstatus
-              Menunggu yang dapat dihapus. Tindakan ini tidak dapat
-              dibatalkan.
+              akan dihapus secara permanen.
+              Penghapusan hanya diizinkan
+              untuk tiket berstatus Menunggu
+              atau Selesai. Tindakan ini tidak
+              dapat dibatalkan.
             </DialogDescription>
           </DialogHeader>
 
@@ -828,7 +1107,9 @@ export default function AssignmentManagementPage() {
             <Button
               type="button"
               variant="destructive"
-              onClick={() => void handleDelete()}
+              onClick={() =>
+                void handleDelete()
+              }
               disabled={isDeleting}
             >
               {isDeleting ? (
@@ -837,10 +1118,15 @@ export default function AssignmentManagementPage() {
                   aria-hidden="true"
                 />
               ) : (
-                <Trash2 className="size-4" aria-hidden="true" />
+                <Trash2
+                  className="size-4"
+                  aria-hidden="true"
+                />
               )}
 
-              {isDeleting ? "Menghapus..." : "Hapus tiket"}
+              {isDeleting
+                ? "Menghapus..."
+                : "Hapus tiket"}
             </Button>
           </DialogFooter>
         </DialogContent>

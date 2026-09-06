@@ -142,13 +142,26 @@ function createPopupContent(
   rows: PopupRow[],
   accentColor: string,
 ) {
-  const container = document.createElement("div");
+  const container =
+    document.createElement("div");
+
   container.style.minWidth = "210px";
   container.style.padding = "4px 2px";
+
   container.style.fontFamily =
     "var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif";
 
-  const heading = document.createElement("p");
+  /*
+   * Mengikuti warna popover aktif sehingga isi
+   * popup tetap terbaca saat tema berubah tanpa
+   * perlu membuat ulang marker Mapbox.
+   */
+  container.style.color =
+    "var(--popover-foreground)";
+
+  const heading =
+    document.createElement("p");
+
   heading.textContent = title;
   heading.style.margin = "0 0 8px";
   heading.style.fontSize = "13px";
@@ -158,27 +171,45 @@ function createPopupContent(
 
   container.appendChild(heading);
 
-  const list = document.createElement("div");
+  const list =
+    document.createElement("div");
+
   list.style.display = "grid";
   list.style.gap = "5px";
 
   rows.forEach((row) => {
-    const item = document.createElement("div");
+    const item =
+      document.createElement("div");
+
     item.style.display = "grid";
-    item.style.gridTemplateColumns = "72px minmax(0, 1fr)";
+
+    item.style.gridTemplateColumns =
+      "72px minmax(0, 1fr)";
+
     item.style.gap = "8px";
     item.style.fontSize = "11px";
     item.style.lineHeight = "1.45";
 
-    const label = document.createElement("span");
-    label.textContent = row.label;
-    label.style.color = "#64748b";
+    const label =
+      document.createElement("span");
 
-    const value = document.createElement("span");
+    label.textContent = row.label;
+
+    label.style.color =
+      "var(--muted-foreground)";
+
+    const value =
+      document.createElement("span");
+
     value.textContent = row.value;
-    value.style.color = "#0f172a";
+
+    value.style.color =
+      "var(--popover-foreground)";
+
     value.style.fontWeight = "600";
-    value.style.overflowWrap = "anywhere";
+
+    value.style.overflowWrap =
+      "anywhere";
 
     item.append(label, value);
     list.appendChild(item);
