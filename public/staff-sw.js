@@ -1,4 +1,4 @@
-const CACHE_NAME = "bti-staff-shell-v1";
+const CACHE_NAME = "bti-staff-shell-v2";
 const OFFLINE_URL = "/staff";
 
 self.addEventListener("install", (event) => {
@@ -8,7 +8,9 @@ self.addEventListener("install", (event) => {
       .then((cache) =>
         cache.addAll([
           OFFLINE_URL,
-          "/staff-icon.svg",
+          "/staff-icon-192.png",
+          "/staff-icon-512.png",
+          "/staff-apple-touch-icon.png",
         ]),
       )
       .then(() => self.skipWaiting()),
@@ -62,15 +64,26 @@ self.addEventListener("fetch", (event) => {
         if (response.ok) {
           const responseCopy = response.clone();
 
-          caches
+          void caches
             .open(CACHE_NAME)
             .then((cache) =>
-              cache.put(OFFLINE_URL, responseCopy),
+              cache.put(
+                OFFLINE_URL,
+                responseCopy,
+              ),
             );
         }
 
         return response;
       })
-      .catch(() => caches.match(OFFLINE_URL)),
+      .catch(async () => {
+        const cachedResponse =
+          await caches.match(OFFLINE_URL);
+
+        return (
+          cachedResponse ||
+          Response.error()
+        );
+      }),
   );
 });
