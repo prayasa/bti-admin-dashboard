@@ -32,6 +32,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -52,6 +53,8 @@ import { supabase } from "@/src/utils/supabase";
 
 const WIB_TIME_ZONE = "Asia/Jakarta";
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const WIB_UTC_OFFSET_IN_MS =
+  7 * 60 * 60 * 1000;
 
 type FilterMode =
   | "hari"
@@ -103,6 +106,11 @@ type DeleteTarget = {
   id: string | number;
   technicianName: string;
   formattedTime: string;
+};
+
+type AttendanceDateRange = {
+  startIso: string;
+  endIso: string;
 };
 
 function getTechnicianName(
@@ -161,9 +169,86 @@ function getWibMonthKey(date: Date): string {
   }).format(date);
 }
 
+function getWibMonthRange(
+  monthKey: string,
+): AttendanceDateRange {
+  const fallbackMonthKey = getWibMonthKey(
+    new Date(),
+  );
+
+  const normalizedMonthKey =
+    /^\d{4}-(0[1-9]|1[0-2])$/.test(
+      monthKey,
+    )
+      ? monthKey
+      : fallbackMonthKey;
+
+  const [year, month] = normalizedMonthKey
+    .split("-")
+    .map(Number);
+
+  const startUtc = new Date(
+    Date.UTC(year, month - 1, 1) -
+      WIB_UTC_OFFSET_IN_MS,
+  );
+
+  const endUtc = new Date(
+    Date.UTC(year, month, 1) -
+      WIB_UTC_OFFSET_IN_MS,
+  );
+
+  return {
+    startIso: startUtc.toISOString(),
+    endIso: endUtc.toISOString(),
+  };
+}
+
+function getAttendanceDateRange(
+  filterMode: FilterMode,
+  selectedMonthKey: string,
+): AttendanceDateRange {
+  const now = new Date();
+
+  if (filterMode === "bulan") {
+    return getWibMonthRange(
+      selectedMonthKey,
+    );
+  }
+
+  if (filterMode === "minggu") {
+    return {
+      startIso: new Date(
+        now.getTime() - 7 * DAY_IN_MS,
+      ).toISOString(),
+      endIso: new Date(
+        now.getTime() + 1_000,
+      ).toISOString(),
+    };
+  }
+
+  const [year, month, day] = getWibDateKey(
+    now,
+  )
+    .split("-")
+    .map(Number);
+
+  const startUtc = new Date(
+    Date.UTC(year, month - 1, day) -
+      WIB_UTC_OFFSET_IN_MS,
+  );
+
+  return {
+    startIso: startUtc.toISOString(),
+    endIso: new Date(
+      startUtc.getTime() + DAY_IN_MS,
+    ).toISOString(),
+  };
+}
+
 function isLogInsideFilter(
   isoDate: string | null,
   filterMode: FilterMode,
+  selectedMonthKey: string,
 ): boolean {
   if (!isoDate) {
     return false;
@@ -196,7 +281,7 @@ function isLogInsideFilter(
 
   return (
     getWibMonthKey(logDate) ===
-    getWibMonthKey(now)
+    selectedMonthKey
   );
 }
 
@@ -249,6 +334,11 @@ export default function AttendancePage() {
   const [filterMode, setFilterMode] =
     useState<FilterMode>("minggu");
 
+  const [selectedMonthKey, setSelectedMonthKey] =
+    useState(() =>
+      getWibMonthKey(new Date()),
+    );
+
   const [isFetching, setIsFetching] =
     useState(true);
 
@@ -267,6 +357,12 @@ export default function AttendancePage() {
       setErrorMessage(null);
 
       try {
+        const dateRange =
+          getAttendanceDateRange(
+            filterMode,
+            selectedMonthKey,
+          );
+
         const [
           techniciansResult,
           attendanceResult,
@@ -295,6 +391,14 @@ export default function AttendancePage() {
                 "teknisi(nama_lengkap)",
               ].join(","),
             )
+            .gte(
+              "waktu_log",
+              dateRange.startIso,
+            )
+            .lt(
+              "waktu_log",
+              dateRange.endIso,
+            )
             .order("waktu_log", {
               ascending: false,
             })
@@ -319,6 +423,14 @@ export default function AttendancePage() {
               ].join(","),
             )
             .eq("result", "REJECTED")
+            .gte(
+              "created_at",
+              dateRange.startIso,
+            )
+            .lt(
+              "created_at",
+              dateRange.endIso,
+            )
             .order("created_at", {
               ascending: false,
             })
@@ -401,7 +513,7 @@ export default function AttendancePage() {
         }
       }
     },
-    [],
+    [filterMode, selectedMonthKey],
   );
 
   useEffect(() => {
@@ -456,11 +568,13 @@ export default function AttendancePage() {
           isLogInsideFilter(
             log.waktu_log,
             filterMode,
+            selectedMonthKey,
           ),
       ),
     [
       attendanceLogs,
       filterMode,
+      selectedMonthKey,
       selectedTechnicianId,
     ],
   );
@@ -474,11 +588,13 @@ export default function AttendancePage() {
           isLogInsideFilter(
             audit.created_at,
             filterMode,
+            selectedMonthKey,
           ),
       ),
     [
       attendanceAudits,
       filterMode,
+      selectedMonthKey,
       selectedTechnicianId,
     ],
   );
@@ -679,30 +795,56 @@ export default function AttendancePage() {
               </CardDescription>
 
               <CardAction>
-                <Select
-                  value={filterMode}
-                  onValueChange={(value) =>
-                    setFilterMode(
-                      value as FilterMode,
-                    )
-                  }
-                >
-                  <SelectTrigger className="w-44">
-                    <SelectValue />
-                  </SelectTrigger>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Select
+                    value={filterMode}
+                    onValueChange={(value) =>
+                      setFilterMode(
+                        value as FilterMode,
+                      )
+                    }
+                  >
+                    <SelectTrigger className="w-44">
+                      <SelectValue />
+                    </SelectTrigger>
 
-                  <SelectContent>
-                    <SelectItem value="hari">
-                      Hari ini
-                    </SelectItem>
-                    <SelectItem value="minggu">
-                      7 hari terakhir
-                    </SelectItem>
-                    <SelectItem value="bulan">
-                      Bulan ini
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                    <SelectContent>
+                      <SelectItem value="hari">
+                        Hari ini
+                      </SelectItem>
+
+                      <SelectItem value="minggu">
+                        7 hari terakhir
+                      </SelectItem>
+
+                      <SelectItem value="bulan">
+                        Pilih bulan
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  {filterMode === "bulan" ? (
+                    <Input
+                      type="month"
+                      value={selectedMonthKey}
+                      max={getWibMonthKey(
+                        new Date(),
+                      )}
+                      onChange={(event) => {
+                        const nextMonth =
+                          event.target.value;
+
+                        if (nextMonth) {
+                          setSelectedMonthKey(
+                            nextMonth,
+                          );
+                        }
+                      }}
+                      className="w-40"
+                      aria-label="Pilih bulan riwayat presensi"
+                    />
+                  ) : null}
+                </div>
               </CardAction>
             </CardHeader>
 
@@ -749,6 +891,7 @@ export default function AttendancePage() {
                     <p className="text-[11px] font-medium text-muted-foreground">
                       {summary.label}
                     </p>
+
                     <p className="mt-1 text-xl font-semibold text-foreground tabular-nums">
                       {isFetching
                         ? "-"
@@ -780,15 +923,19 @@ export default function AttendancePage() {
                       <TableHead>
                         Waktu
                       </TableHead>
+
                       <TableHead>
                         Tipe
                       </TableHead>
+
                       <TableHead>
                         Koordinat
                       </TableHead>
+
                       <TableHead>
                         Validasi
                       </TableHead>
+
                       <TableHead className="w-14 text-right">
                         Aksi
                       </TableHead>
@@ -804,15 +951,19 @@ export default function AttendancePage() {
                           <TableCell>
                             <Skeleton className="h-4 w-32" />
                           </TableCell>
+
                           <TableCell>
                             <Skeleton className="h-5 w-14 rounded-full" />
                           </TableCell>
+
                           <TableCell>
                             <Skeleton className="h-4 w-36" />
                           </TableCell>
+
                           <TableCell>
                             <Skeleton className="h-5 w-20 rounded-full" />
                           </TableCell>
+
                           <TableCell>
                             <Skeleton className="ml-auto size-8" />
                           </TableCell>
@@ -889,6 +1040,7 @@ export default function AttendancePage() {
                                     className="size-3"
                                     aria-hidden="true"
                                   />
+
                                   {Number(
                                     log.latitude_aktual,
                                   ).toFixed(5)}
