@@ -159,15 +159,6 @@ function getStatusClassName(status: string) {
   }
 }
 
-function canDeleteAssignment(
-  status: string,
-) {
-  return (
-    status === "Pending" ||
-    status === "Success"
-  );
-}
-
 export default function AssignmentManagementPage() {
   const [assignments, setAssignments] =
     useState<Assignment[]>([]);
@@ -541,104 +532,91 @@ export default function AssignmentManagementPage() {
       return;
     }
 
-    if (
-      !canDeleteAssignment(
-        assignmentToDelete.status,
-      )
-    ) {
-      toast.error(
-        "Tiket tidak dapat dihapus.",
-        {
-          description:
-            "Tiket yang sedang diproses dikunci sampai teknisi menyelesaikan pekerjaan.",
-        },
-      );
-
-      setAssignmentToDelete(null);
-      await fetchData(false);
-      return;
-    }
-
     setIsDeleting(true);
 
-    const { data, error } =
-      await supabase.rpc(
-        "admin_delete_assignment",
-        {
-          p_assignment_id:
-            assignmentToDelete.id,
-        },
-      );
+    try {
+      const { data, error } =
+        await supabase.rpc(
+          "admin_delete_assignment",
+          {
+            p_assignment_id:
+              assignmentToDelete.id,
+          },
+        );
 
-    if (error) {
-      console.error(
-        "Gagal menghapus penugasan:",
-        error,
-      );
+      if (error) {
+        console.error(
+          "Gagal menghapus penugasan:",
+          error,
+        );
 
-      toast.error(
-        "Tiket penugasan gagal dihapus.",
-        {
-          description: error.message,
-        },
-      );
+        toast.error(
+          "Tiket penugasan gagal dihapus.",
+          {
+            description: error.message,
+          },
+        );
 
-      setIsDeleting(false);
-      return;
-    }
+        return;
+      }
 
-    const deleteResult =
-      data &&
-      typeof data === "object" &&
-      !Array.isArray(data)
-        ? (data as Record<
-            string,
-            unknown
-          >)
-        : null;
+      const deleteResult =
+        data &&
+        typeof data === "object" &&
+        !Array.isArray(data)
+          ? (data as Record<
+              string,
+              unknown
+            >)
+          : null;
 
-    if (
-      !deleteResult ||
-      deleteResult.accepted !== true
-    ) {
-      const responseMessage =
-        typeof deleteResult?.message ===
-        "string"
-          ? deleteResult.message
-          : "Status tiket telah berubah. Data akan dimuat ulang.";
+      if (
+        !deleteResult ||
+        deleteResult.accepted !== true
+      ) {
+        const responseMessage =
+          typeof deleteResult?.message ===
+          "string"
+            ? deleteResult.message
+            : "Status tiket telah berubah. Data akan dimuat ulang.";
 
-      toast.error(
-        "Tiket tidak dapat dihapus.",
-        {
-          description:
-            responseMessage,
-        },
+        toast.error(
+          "Tiket tidak dapat dihapus.",
+          {
+            description:
+              responseMessage,
+          },
+        );
+
+        setAssignmentToDelete(null);
+        await fetchData(false);
+        return;
+      }
+
+      if (
+        editingAssignment?.id ===
+        assignmentToDelete.id
+      ) {
+        setEditingAssignment(null);
+
+        setFormRevision(
+          (revision) => revision + 1,
+        );
+      }
+
+      toast.success(
+        "Tiket penugasan telah dihapus.",
       );
 
       setAssignmentToDelete(null);
       await fetchData(false);
       setIsDeleting(false);
-      return;
+    } catch (error) {
+      console.error("Gagal menghapus penugasan:", error);
+      toast.error("Tiket penugasan gagal dihapus. Periksa koneksi dan coba kembali.");
+    } finally {
+      setIsDeleting(false);
     }
-
-    if (
-      editingAssignment?.id ===
-      assignmentToDelete.id
-    ) {
-      setEditingAssignment(null);
-
-      setFormRevision(
-        (revision) => revision + 1,
-      );
-    }
-
-    toast.success(
-      "Tiket penugasan telah dihapus.",
-    );
-
-    setAssignmentToDelete(null);
-    await fetchData(false);
-    setIsDeleting(false);
   };
 
   return (
@@ -1027,18 +1005,8 @@ export default function AssignmentManagementPage() {
                                 )
                               }
                               aria-label={`Hapus tiket ${assignment.clientName}`}
-                              title={
-                                canDeleteAssignment(
-                                  assignment.status,
-                                )
-                                  ? "Hapus tiket"
-                                  : "Tiket yang sedang diproses tidak dapat dihapus"
-                              }
-                              disabled={
-                                !canDeleteAssignment(
-                                  assignment.status,
-                                )
-                              }
+                              title="Hapus tiket, termasuk yang sedang berjalan"
+                              disabled={isDeleting}
                             >
                               <Trash2
                                 className="size-4"
@@ -1072,7 +1040,7 @@ export default function AssignmentManagementPage() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent showCloseButton={!isDeleting}>
           <DialogHeader>
             <DialogTitle>
               Hapus tiket penugasan?
@@ -1086,10 +1054,10 @@ export default function AssignmentManagementPage() {
                 }
               </span>{" "}
               akan dihapus secara permanen.
-              Penghapusan hanya diizinkan
-              untuk tiket berstatus Menunggu
-              atau Selesai. Tindakan ini tidak
-              dapat dibatalkan.
+              Admin dapat menghapus tiket pada semua status.
+              Jika tiket sedang berjalan, sesi tracking aktif akan
+              dibatalkan dan lokasi langsung dihapus. Riwayat lokasi
+              tetap tersimpan. Tindakan ini tidak dapat dibatalkan.
             </DialogDescription>
           </DialogHeader>
 
@@ -1134,3 +1102,4 @@ export default function AssignmentManagementPage() {
     </div>
   );
 }
+

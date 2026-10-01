@@ -1,526 +1,326 @@
 "use client";
 
 import {
-  CircleAlert,
-  MapPin,
-  Radio,
-  RefreshCw,
-  ShieldAlert,
-  Trash2,
-} from "lucide-react";
-import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
+
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/admin/page-header";
+import { TechnicianList } from "@/components/presensi/technician-list";
 import { DeleteAttendanceDialog } from "@/components/presensi/delete-attendance-dialog";
-import {
-  TechnicianList,
-  type TechnicianListItem,
-} from "@/components/presensi/technician-list";
+import { DeleteAllAttendanceDialog } from "@/components/presensi/delete-all-attendance-dialog";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { supabase } from "@/src/utils/supabase";
 
-const WIB_TIME_ZONE = "Asia/Jakarta";
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
-const WIB_UTC_OFFSET_IN_MS =
-  7 * 60 * 60 * 1000;
+import {
+  dailyRecap,
+  dateKey,
+  downloadAttendanceReport,
+  formatTime,
+  getPeriod,
+  readAll,
+  shiftMonth,
+  type Attendance,
+  type AttendanceAudit,
+  type FilterMode,
+  type Period,
+  type Technician,
+} from "@/lib/presensi-report";
 
-type FilterMode =
-  | "hari"
-  | "minggu"
-  | "bulan";
+const PAGE_SIZE = 25;
 
-type TechnicianRow = {
-  id: string | number;
-  nama_lengkap: string;
-  nik: string | null;
+const selectClass =
+  "h-9 rounded-md border bg-background px-3 text-sm";
+
+type LoadedData = {
+  technicians: Technician[];
+  logs: Attendance[];
+  audits: AttendanceAudit[];
 };
 
-type TechnicianRelation =
-  | {
-      nama_lengkap: string;
-    }
-  | {
-      nama_lengkap: string;
-    }[]
-  | null;
+async function loadData(
+  period: Period,
+  signal: AbortSignal,
+): Promise<LoadedData> {
+  const [technicians, logs, audits] =
+    await Promise.all([
+      readAll<Technician>((from, to) =>
+        supabase
+          .from("teknisi")
+          .select("id,nama_lengkap,nik", {
+            count: "exact",
+          })
+          .order("id")
+          .range(from, to)
+          .abortSignal(signal),
+      ),
 
-type AttendanceLog = {
-  id_absen: string | number;
-  id_teknisi: string | number;
-  waktu_log: string | null;
-  tipe_log: string | null;
-  latitude_aktual: number | null;
-  longitude_aktual: number | null;
-  is_valid: boolean | null;
-  teknisi: TechnicianRelation;
-};
+      readAll<Attendance>((from, to) =>
+        supabase
+          .from("log_presensi")
+          .select(
+            "id_absen,id_teknisi,waktu_log,tipe_log,latitude_aktual,longitude_aktual,is_valid",
+            {
+              count: "exact",
+            },
+          )
+          .gte("waktu_log", period.start)
+          .lt("waktu_log", period.end)
+          .order("waktu_log", {
+            ascending: false,
+          })
+          .order("id_absen")
+          .range(from, to)
+          .abortSignal(signal),
+      ),
 
-type AttendanceAudit = {
-  id_audit: string | number;
-  technician_id: string;
-  attendance_type: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  accuracy_meters: number | null;
-  location_age_ms: number | null;
-  distance_meters: number | null;
-  is_mock: boolean | null;
-  result: string;
-  reason: string | null;
-  created_at: string | null;
-};
+      readAll<AttendanceAudit>((from, to) =>
+        supabase
+          .from("presensi_audit")
+          .select(
+            "id_audit,technician_id,attendance_type,latitude,longitude,accuracy_meters,location_age_ms,distance_meters,is_mock,result,reason,created_at",
+            {
+              count: "exact",
+            },
+          )
+          .eq("result", "REJECTED")
+          .gte("created_at", period.start)
+          .lt("created_at", period.end)
+          .order("created_at", {
+            ascending: false,
+          })
+          .order("id_audit")
+          .range(from, to)
+          .abortSignal(signal),
+      ),
+    ]);
 
-type DeleteTarget = {
-  id: string | number;
-  technicianName: string;
-  formattedTime: string;
-};
-
-type AttendanceDateRange = {
-  startIso: string;
-  endIso: string;
-};
-
-function getTechnicianName(
-  relation: TechnicianRelation,
-): string {
-  if (Array.isArray(relation)) {
-    return (
-      relation[0]?.nama_lengkap ??
-      "Teknisi tidak tersedia"
-    );
-  }
-
-  return (
-    relation?.nama_lengkap ??
-    "Teknisi tidak tersedia"
-  );
-}
-
-function formatWibDateTime(
-  isoDate: string | null,
-): string {
-  if (!isoDate) {
-    return "-";
-  }
-
-  const date = new Date(isoDate);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return `${new Intl.DateTimeFormat("id-ID", {
-    timeZone: WIB_TIME_ZONE,
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date)} WIB`;
-}
-
-function getWibDateKey(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: WIB_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
-function getWibMonthKey(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: WIB_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-  }).format(date);
-}
-
-function getWibMonthRange(
-  monthKey: string,
-): AttendanceDateRange {
-  const fallbackMonthKey = getWibMonthKey(
-    new Date(),
-  );
-
-  const normalizedMonthKey =
-    /^\d{4}-(0[1-9]|1[0-2])$/.test(
-      monthKey,
-    )
-      ? monthKey
-      : fallbackMonthKey;
-
-  const [year, month] = normalizedMonthKey
-    .split("-")
-    .map(Number);
-
-  const startUtc = new Date(
-    Date.UTC(year, month - 1, 1) -
-      WIB_UTC_OFFSET_IN_MS,
-  );
-
-  const endUtc = new Date(
-    Date.UTC(year, month, 1) -
-      WIB_UTC_OFFSET_IN_MS,
+  technicians.sort((a, b) =>
+    a.nama_lengkap.localeCompare(
+      b.nama_lengkap,
+      "id",
+    ),
   );
 
   return {
-    startIso: startUtc.toISOString(),
-    endIso: endUtc.toISOString(),
+    technicians,
+    logs,
+    audits,
   };
 }
 
-function getAttendanceDateRange(
-  filterMode: FilterMode,
-  selectedMonthKey: string,
-): AttendanceDateRange {
-  const now = new Date();
-
-  if (filterMode === "bulan") {
-    return getWibMonthRange(
-      selectedMonthKey,
-    );
+function message(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
   }
 
-  if (filterMode === "minggu") {
-    return {
-      startIso: new Date(
-        now.getTime() - 7 * DAY_IN_MS,
-      ).toISOString(),
-      endIso: new Date(
-        now.getTime() + 1_000,
-      ).toISOString(),
-    };
+  if (
+    typeof error === "object" &&
+    error &&
+    "message" in error
+  ) {
+    return String(error.message);
   }
 
-  const [year, month, day] = getWibDateKey(
-    now,
-  )
-    .split("-")
-    .map(Number);
-
-  const startUtc = new Date(
-    Date.UTC(year, month - 1, day) -
-      WIB_UTC_OFFSET_IN_MS,
-  );
-
-  return {
-    startIso: startUtc.toISOString(),
-    endIso: new Date(
-      startUtc.getTime() + DAY_IN_MS,
-    ).toISOString(),
-  };
+  return "Terjadi kesalahan. Silakan coba kembali.";
 }
 
-function isLogInsideFilter(
-  isoDate: string | null,
-  filterMode: FilterMode,
-  selectedMonthKey: string,
-): boolean {
-  if (!isoDate) {
-    return false;
-  }
-
-  const logDate = new Date(isoDate);
-
-  if (Number.isNaN(logDate.getTime())) {
-    return false;
-  }
-
-  const now = new Date();
-
-  if (filterMode === "hari") {
-    return (
-      getWibDateKey(logDate) ===
-      getWibDateKey(now)
-    );
-  }
-
-  if (filterMode === "minggu") {
-    const difference =
-      now.getTime() - logDate.getTime();
-
-    return (
-      difference >= 0 &&
-      difference <= 7 * DAY_IN_MS
-    );
-  }
-
-  return (
-    getWibMonthKey(logDate) ===
-    selectedMonthKey
-  );
-}
-
-function hasCoordinates(
+function mapLink(
   latitude: number | null,
   longitude: number | null,
-): boolean {
+) {
   if (
     latitude === null ||
     longitude === null
   ) {
-    return false;
+    return "—";
   }
 
   return (
-    Number.isFinite(Number(latitude)) &&
-    Number.isFinite(Number(longitude)) &&
-    !(latitude === 0 && longitude === 0)
+    <a
+      className="text-primary underline"
+      target="_blank"
+      rel="noopener noreferrer"
+      href={`https://www.google.com/maps?q=${latitude},${longitude}`}
+    >
+      {latitude.toFixed(5)},{" "}
+      {longitude.toFixed(5)}
+    </a>
   );
 }
 
-function formatMeters(
-  value: number | null,
-): string {
-  if (
-    value === null ||
-    !Number.isFinite(Number(value))
-  ) {
-    return "-";
-  }
+export default function AdminPresensiPage() {
+  const [mode, setMode] =
+    useState<FilterMode>("bulan");
 
-  return `${Math.round(Number(value))} m`;
-}
+  const [month, setMonth] = useState(() =>
+    dateKey().slice(0, 7),
+  );
 
-export default function AttendancePage() {
-  const [technicians, setTechnicians] =
-    useState<TechnicianListItem[]>([]);
+  const [today, setToday] = useState(() =>
+    dateKey(),
+  );
 
-  const [
-    selectedTechnicianId,
-    setSelectedTechnicianId,
-  ] = useState<string | null>(null);
+  const [data, setData] = useState<LoadedData>({
+    technicians: [],
+    logs: [],
+    audits: [],
+  });
 
-  const [attendanceLogs, setAttendanceLogs] =
-    useState<AttendanceLog[]>([]);
-
-  const [attendanceAudits, setAttendanceAudits] =
-    useState<AttendanceAudit[]>([]);
-
-  const [filterMode, setFilterMode] =
-    useState<FilterMode>("minggu");
-
-  const [selectedMonthKey, setSelectedMonthKey] =
-    useState(() =>
-      getWibMonthKey(new Date()),
-    );
-
-  const [isFetching, setIsFetching] =
-    useState(true);
-
-  const [errorMessage, setErrorMessage] =
+  const [selectedId, setSelectedId] =
     useState<string | null>(null);
 
+  const [scope, setScope] = useState("semua");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
+  const [page, setPage] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
+
+  const [exporting, setExporting] =
+    useState(false);
+
+  const [deleting, setDeleting] =
+    useState(false);
+
   const [deleteTarget, setDeleteTarget] =
-    useState<DeleteTarget | null>(null);
+    useState<Attendance | null>(null);
 
-  const fetchData = useCallback(
-    async (showLoading = true) => {
-      if (showLoading) {
-        setIsFetching(true);
-      }
+  const [deleteAllOpen, setDeleteAllOpen] =
+    useState(false);
 
-      setErrorMessage(null);
+  const exportController =
+    useRef<AbortController | null>(null);
 
-      try {
-        const dateRange =
-          getAttendanceDateRange(
-            filterMode,
-            selectedMonthKey,
-          );
+  const exportBusy = useRef(false);
+  const deleteBusy = useRef(false);
 
-        const [
-          techniciansResult,
-          attendanceResult,
-          auditsResult,
-        ] = await Promise.all([
-          supabase
-            .from("teknisi")
-            .select(
-              "id, nama_lengkap, nik",
-            )
-            .order("nama_lengkap", {
-              ascending: true,
-            }),
-
-          supabase
-            .from("log_presensi")
-            .select(
-              [
-                "id_absen",
-                "id_teknisi",
-                "waktu_log",
-                "tipe_log",
-                "latitude_aktual",
-                "longitude_aktual",
-                "is_valid",
-                "teknisi(nama_lengkap)",
-              ].join(","),
-            )
-            .gte(
-              "waktu_log",
-              dateRange.startIso,
-            )
-            .lt(
-              "waktu_log",
-              dateRange.endIso,
-            )
-            .order("waktu_log", {
-              ascending: false,
-            })
-            .limit(1000),
-
-          supabase
-            .from("presensi_audit")
-            .select(
-              [
-                "id_audit",
-                "technician_id",
-                "attendance_type",
-                "latitude",
-                "longitude",
-                "accuracy_meters",
-                "location_age_ms",
-                "distance_meters",
-                "is_mock",
-                "result",
-                "reason",
-                "created_at",
-              ].join(","),
-            )
-            .eq("result", "REJECTED")
-            .gte(
-              "created_at",
-              dateRange.startIso,
-            )
-            .lt(
-              "created_at",
-              dateRange.endIso,
-            )
-            .order("created_at", {
-              ascending: false,
-            })
-            .limit(1000),
-        ]);
-
-        const errors = [
-          techniciansResult.error,
-          attendanceResult.error,
-          auditsResult.error,
-        ].flatMap((error) =>
-          error ? [error.message] : [],
-        );
-
-        if (errors.length > 0) {
-          console.error(
-            "Presensi query errors:",
-            errors,
-          );
-
-          setErrorMessage(
-            "Sebagian data presensi gagal dimuat. Coba segarkan halaman.",
-          );
-        }
-
-        const normalizedTechnicians = (
-          (techniciansResult.data ??
-            []) as TechnicianRow[]
-        ).map((technician) => ({
-          id: String(technician.id),
-          nama_lengkap:
-            technician.nama_lengkap,
-          nik: technician.nik,
-        }));
-
-        setTechnicians(
-          normalizedTechnicians,
-        );
-
-        setSelectedTechnicianId(
-          (currentId) => {
-            const stillExists =
-              normalizedTechnicians.some(
-                (technician) =>
-                  technician.id === currentId,
-              );
-
-            if (stillExists) {
-              return currentId;
-            }
-
-            return (
-              normalizedTechnicians[0]?.id ??
-              null
-            );
-          },
-        );
-
-        setAttendanceLogs(
-          (attendanceResult.data ??
-            []) as unknown as AttendanceLog[],
-        );
-
-        setAttendanceAudits(
-          (auditsResult.data ??
-            []) as unknown as AttendanceAudit[],
-        );
-      } catch (error) {
-        console.error(
-          "Gagal memuat presensi:",
-          error,
-        );
-
-        setErrorMessage(
-          "Tidak dapat terhubung ke server presensi.",
-        );
-      } finally {
-        if (showLoading) {
-          setIsFetching(false);
-        }
-      }
-    },
-    [filterMode, selectedMonthKey],
+  const period = useMemo(
+    () =>
+      getPeriod(
+        mode,
+        month,
+        new Date(`${today}T12:00:00+07:00`),
+      ),
+    [mode, month, today],
   );
 
-  useEffect(() => {
-    void fetchData();
+  const refresh = useCallback(() => {
+    setReload((value) => value + 1);
+  }, []);
 
-    const realtimeChannel = supabase
-      .channel("admin-presensi-realtime")
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setToday(dateKey());
+    }, 60_000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
+    setLoading(true);
+    setError("");
+
+    void loadData(period, controller.signal)
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+
+        setData(result);
+
+        setSelectedId((current) => {
+          const stillExists =
+            result.technicians.some(
+              (person) =>
+                String(person.id) === current,
+            );
+
+          if (stillExists) {
+            return current;
+          }
+
+          return result.technicians[0]
+            ? String(
+                result.technicians[0].id,
+              )
+            : null;
+        });
+      })
+      .catch((cause: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        console.error(
+          "Gagal memuat histori presensi:",
+          cause,
+        );
+
+        setData({
+          technicians: [],
+          logs: [],
+          audits: [],
+        });
+
+        setError(message(cause));
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [period, reload]);
+
+  useEffect(() => {
+    let timer:
+      | ReturnType<typeof setTimeout>
+      | undefined;
+
+    const schedule = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+
+      timer = setTimeout(refresh, 500);
+    };
+
+    const channel = supabase
+      .channel("admin-presensi-history")
       .on(
         "postgres_changes",
         {
@@ -528,9 +328,7 @@ export default function AttendancePage() {
           schema: "public",
           table: "log_presensi",
         },
-        () => {
-          void fetchData(false);
-        },
+        schedule,
       )
       .on(
         "postgres_changes",
@@ -539,524 +337,664 @@ export default function AttendancePage() {
           schema: "public",
           table: "presensi_audit",
         },
-        () => {
-          void fetchData(false);
+        schedule,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "teknisi",
         },
+        schedule,
       )
       .subscribe();
 
     return () => {
-      void supabase.removeChannel(
-        realtimeChannel,
-      );
+      if (timer) {
+        clearTimeout(timer);
+      }
+
+      void supabase.removeChannel(channel);
     };
-  }, [fetchData]);
+  }, [refresh]);
 
-  const selectedTechnician =
-    technicians.find(
-      (technician) =>
-        technician.id ===
-        selectedTechnicianId,
-    ) ?? null;
+  useEffect(() => {
+    return () => {
+      exportController.current?.abort();
+    };
+  }, []);
 
-  const filteredLogs = useMemo(
+  useEffect(() => {
+    setPage(1);
+    setAuditPage(1);
+  }, [selectedId, period]);
+
+  const selected = data.technicians.find(
+    (person) =>
+      String(person.id) === selectedId,
+  );
+
+  const logs = useMemo(
     () =>
-      attendanceLogs.filter(
+      data.logs.filter(
         (log) =>
           String(log.id_teknisi) ===
-            selectedTechnicianId &&
-          isLogInsideFilter(
-            log.waktu_log,
-            filterMode,
-            selectedMonthKey,
-          ),
+          selectedId,
       ),
-    [
-      attendanceLogs,
-      filterMode,
-      selectedMonthKey,
-      selectedTechnicianId,
-    ],
+    [data.logs, selectedId],
   );
 
-  const filteredRejectedAudits = useMemo(
+  const audits = useMemo(
     () =>
-      attendanceAudits.filter(
+      data.audits.filter(
         (audit) =>
           String(audit.technician_id) ===
-            selectedTechnicianId &&
-          isLogInsideFilter(
-            audit.created_at,
-            filterMode,
-            selectedMonthKey,
-          ),
+          selectedId,
       ),
-    [
-      attendanceAudits,
-      filterMode,
-      selectedMonthKey,
-      selectedTechnicianId,
-    ],
+    [data.audits, selectedId],
   );
 
-  const attendanceSummary = useMemo(() => {
-    const validLogs = filteredLogs.filter(
-      (log) => log.is_valid === true,
+  const days = useMemo(
+    () => dailyRecap(logs),
+    [logs],
+  );
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(logs.length / PAGE_SIZE),
+  );
+
+  const totalAuditPages = Math.max(
+    1,
+    Math.ceil(audits.length / PAGE_SIZE),
+  );
+
+  const currentPage = Math.min(
+    page,
+    totalPages,
+  );
+
+  const currentAuditPage = Math.min(
+    auditPage,
+    totalAuditPages,
+  );
+
+  const visibleLogs = logs.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
+
+  const visibleAudits = audits.slice(
+    (currentAuditPage - 1) * PAGE_SIZE,
+    currentAuditPage * PAGE_SIZE,
+  );
+
+  const technicians = data.technicians
+    .filter((person) =>
+      `${person.nama_lengkap} ${person.nik ?? ""}`
+        .toLowerCase()
+        .includes(search.toLowerCase()),
+    )
+    .map((person) => ({
+      ...person,
+      id: String(person.id),
+    }));
+
+  function changeMonth(offset: number) {
+    setMonth((current) =>
+      shiftMonth(current, offset),
     );
 
-    const invalidLogs = filteredLogs.filter(
-      (log) => log.is_valid === false,
-    );
+    setMode("bulan");
+  }
 
-    const dailyTracker = new Map<
-      string,
-      {
-        masuk: boolean;
-        pulang: boolean;
-      }
-    >();
+  async function exportExcel() {
+    if (
+      exportBusy.current ||
+      loading ||
+      deleting ||
+      (scope === "dipilih" && !selectedId)
+    ) {
+      return;
+    }
 
-    validLogs.forEach((log) => {
-      if (!log.waktu_log) {
+    exportBusy.current = true;
+    setExporting(true);
+
+    const controller = new AbortController();
+    exportController.current = controller;
+
+    const chosenId = selectedId;
+    const chosenScope = scope;
+    const chosenPeriod = period;
+
+    try {
+      // Ekspor mengambil ulang seluruh periode.
+      // Halaman tabel tidak membatasi isi Excel.
+      const fresh = await loadData(
+        chosenPeriod,
+        controller.signal,
+      );
+
+      if (controller.signal.aborted) {
         return;
       }
 
-      const dateKey = getWibDateKey(
-        new Date(log.waktu_log),
+      const person = fresh.technicians.find(
+        (item) =>
+          String(item.id) === chosenId,
       );
 
-      const current =
-        dailyTracker.get(dateKey) ?? {
-          masuk: false,
-          pulang: false,
-        };
+      await downloadAttendanceReport({
+        technicians:
+          chosenScope === "semua"
+            ? fresh.technicians
+            : fresh.technicians.filter(
+                (item) =>
+                  String(item.id) ===
+                  chosenId,
+              ),
 
-      if (log.tipe_log === "MASUK") {
-        current.masuk = true;
-      }
+        logs:
+          chosenScope === "semua"
+            ? fresh.logs
+            : fresh.logs.filter(
+                (item) =>
+                  String(item.id_teknisi) ===
+                  chosenId,
+              ),
 
-      if (log.tipe_log === "PULANG") {
-        current.pulang = true;
-      }
+        audits:
+          chosenScope === "semua"
+            ? fresh.audits
+            : fresh.audits.filter(
+                (item) =>
+                  String(
+                    item.technician_id,
+                  ) === chosenId,
+              ),
 
-      dailyTracker.set(dateKey, current);
-    });
+        period: chosenPeriod,
 
-    const completeDays = Array.from(
-      dailyTracker.values(),
-    ).filter(
-      (day) => day.masuk && day.pulang,
-    ).length;
+        scope:
+          chosenScope === "semua"
+            ? "Semua teknisi"
+            : person?.nama_lengkap ??
+              `Teknisi ${chosenId}`,
+      });
 
-    return {
-      official: filteredLogs.length,
-      valid: validLogs.length,
-      rejected:
-        invalidLogs.length +
-        filteredRejectedAudits.length,
-      completeDays,
-    };
-  }, [filteredLogs, filteredRejectedAudits]);
-
-  const handleDeleteAttendance =
-    async (): Promise<boolean> => {
-      if (!deleteTarget) {
-        return false;
-      }
-
-      try {
-        const { error } = await supabase
-          .from("log_presensi")
-          .delete()
-          .eq(
-            "id_absen",
-            deleteTarget.id,
-          );
-
-        if (error) {
-          console.error(
-            "Gagal menghapus presensi:",
-            error,
-          );
-
-          toast.error(
-            "Presensi gagal dihapus.",
-            {
-              description:
-                "Periksa koneksi atau izin database.",
-            },
-          );
-
-          return false;
-        }
-
-        setAttendanceLogs((currentLogs) =>
-          currentLogs.filter(
-            (log) =>
-              log.id_absen !==
-              deleteTarget.id,
-          ),
-        );
-
+      if (!controller.signal.aborted) {
         toast.success(
-          "Presensi berhasil dihapus.",
+          "Rekap Excel berhasil diekspor.",
         );
-
-        return true;
-      } catch (error) {
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) {
         console.error(
-          "Gagal menghapus presensi:",
-          error,
+          "Ekspor presensi gagal:",
+          cause,
         );
 
         toast.error(
-          "Terjadi kesalahan saat menghapus presensi.",
+          `Ekspor gagal: ${message(cause)}`,
         );
-
-        return false;
       }
-    };
+    } finally {
+      exportBusy.current = false;
+      exportController.current = null;
+      setExporting(false);
+    }
+  }
+
+  async function deleteAttendance() {
+    if (
+      !deleteTarget ||
+      deleteBusy.current ||
+      exportBusy.current
+    ) {
+      return false;
+    }
+
+    deleteBusy.current = true;
+    setDeleting(true);
+
+    try {
+      const result = await supabase.rpc(
+        "admin_delete_attendance",
+        {
+          p_attendance_id: String(
+            deleteTarget.id_absen,
+          ),
+        },
+      );
+
+      if (result.error) {
+        throw result.error;
+      }
+
+      if (
+        !result.data?.accepted ||
+        !result.data?.success
+      ) {
+        throw new Error(
+          result.data?.message ||
+            "Penghapusan ditolak.",
+        );
+      }
+
+      toast.success(
+        result.data.message ||
+          "Presensi dihapus.",
+      );
+
+      refresh();
+      return true;
+    } catch (cause) {
+      toast.error(message(cause));
+      return false;
+    } finally {
+      deleteBusy.current = false;
+      setDeleting(false);
+    }
+  }
+
+  async function deleteAll(
+    confirmation: string,
+  ) {
+    if (
+      deleteBusy.current ||
+      exportBusy.current
+    ) {
+      return false;
+    }
+
+    deleteBusy.current = true;
+    setDeleting(true);
+
+    try {
+      const result = await supabase.rpc(
+        "admin_delete_all_attendance",
+        {
+          p_confirmation: confirmation,
+        },
+      );
+
+      if (result.error) {
+        throw result.error;
+      }
+
+      if (
+        !result.data?.accepted ||
+        !result.data?.success
+      ) {
+        throw new Error(
+          result.data?.message ||
+            "Penghapusan ditolak.",
+        );
+      }
+
+      toast.success(
+        `${result.data.deleted_count ?? 0} log presensi dihapus.`,
+      );
+
+      setDeleteTarget(null);
+      refresh();
+
+      return true;
+    } catch (cause) {
+      toast.error(message(cause));
+      return false;
+    } finally {
+      deleteBusy.current = false;
+      setDeleting(false);
+    }
+  }
 
   return (
-    <div className="page-container space-y-5">
+    <div className="space-y-6">
       <PageHeader
-        title="Manajemen Presensi"
-        description="Pantau riwayat masuk dan pulang teknisi, validasi geofence, serta percobaan presensi yang ditolak."
+        title="Presensi & histori"
+        description="Lihat histori per bulan dan unduh rekap Excel dalam waktu WIB."
         actions={
           <>
-            <Badge variant="success">
-              <Radio aria-hidden="true" />
-              Realtime aktif
-            </Badge>
-
             <Button
               variant="outline"
-              size="sm"
-              onClick={() =>
-                void fetchData()
+              onClick={refresh}
+              disabled={
+                loading ||
+                deleting ||
+                exporting
               }
-              disabled={isFetching}
             >
               <RefreshCw
                 className={
-                  isFetching
+                  loading
                     ? "animate-spin"
-                    : undefined
+                    : ""
                 }
-                aria-hidden="true"
+                
               />
-              Segarkan
+              Muat ulang
+            </Button>
+
+            <Button
+              variant="destructive"
+              disabled={
+                loading ||
+                deleting ||
+                exporting
+              }
+              onClick={() =>
+                setDeleteAllOpen(true)
+              }
+            >
+              <Trash2 />
+              Hapus semua presensi
             </Button>
           </>
         }
       />
 
-      {errorMessage ? (
-        <div
-          role="alert"
-          className="flex items-center gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3"
-        >
-          <CircleAlert
-            className="size-4 shrink-0 text-destructive"
-            aria-hidden="true"
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Periode histori
+          </CardTitle>
+
+          <CardDescription>
+            Filter periode membatasi tampilan
+            dan ekspor. Hapus semua tetap
+            menghapus seluruh tanggal.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="space-y-1 text-sm">
+              Periode
+              <select
+                aria-label="Periode"
+                className={`${selectClass} block`}
+                value={mode}
+                disabled={
+                  exporting || deleting
+                }
+                onChange={(event) =>
+                  setMode(
+                    event.target
+                      .value as FilterMode,
+                  )
+                }
+              >
+                <option value="bulan">
+                  Bulanan / histori
+                </option>
+                <option value="hari">
+                  Hari ini
+                </option>
+                <option value="minggu">
+                  7 hari terakhir
+                </option>
+              </select>
+            </label>
+
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Bulan sebelumnya"
+              disabled={
+                exporting ||
+                deleting ||
+                month <= "1000-01"
+              }
+              onClick={() => changeMonth(-1)}
+            >
+              <ChevronLeft />
+            </Button>
+
+            <label className="space-y-1 text-sm">
+              Bulan histori
+              <Input
+                className="w-44"
+                type="month"
+                min="1000-01"
+                max={today.slice(0, 7)}
+                value={month}
+                disabled={
+                  exporting || deleting
+                }
+                onChange={(event) => {
+                  const value =
+                    event.target.value;
+
+                  if (
+                    /^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(
+                      value,
+                    ) &&
+                    value <=
+                      today.slice(0, 7)
+                  ) {
+                    setMonth(value);
+                    setMode("bulan");
+                  }
+                }}
+              />
+            </label>
+
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Bulan berikutnya"
+              disabled={
+                exporting ||
+                deleting ||
+                month >= today.slice(0, 7)
+              }
+              onClick={() => changeMonth(1)}
+            >
+              <ChevronRight />
+            </Button>
+
+            <Badge variant="secondary">
+              {period.label} · WIB
+            </Badge>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="space-y-1 text-sm">
+              Cakupan Excel
+              <select
+                className={`${selectClass} block`}
+                value={scope}
+                disabled={
+                  exporting || deleting
+                }
+                onChange={(event) =>
+                  setScope(
+                    event.target.value,
+                  )
+                }
+              >
+                <option value="semua">
+                  Semua teknisi
+                </option>
+                <option value="dipilih">
+                  Teknisi yang dipilih
+                </option>
+              </select>
+            </label>
+
+            <Button
+              onClick={() =>
+                void exportExcel()
+              }
+              disabled={
+                loading ||
+                exporting ||
+                deleting ||
+                !!error ||
+                (scope === "dipilih" &&
+                  !selectedId)
+              }
+            >
+              <Download />
+              {exporting
+                ? "Menyiapkan Excel..."
+                : "Ekspor Excel (.xlsx)"}
+            </Button>
+          </div>
+
+          {loading && (
+            <p
+              className="text-sm text-muted-foreground"
+              role="status"
+            >
+              Memuat seluruh data periode...
+            </p>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              className="text-sm text-destructive"
+            >
+              {error} Klik Muat ulang untuk
+              mencoba kembali.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="grid items-start gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <div className="space-y-3">
+          <Input
+            aria-label="Cari teknisi"
+            placeholder="Cari nama atau NIK..."
+            value={search}
+            onChange={(event) =>
+              setSearch(event.target.value)
+            }
           />
 
-          <p className="text-sm text-destructive">
-            {errorMessage}
-          </p>
+          <TechnicianList
+            technicians={technicians}
+            selectedId={selectedId}
+            isLoading={loading}
+            onSelect={setSelectedId}
+          />
         </div>
-      ) : null}
 
-      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <TechnicianList
-          technicians={technicians}
-          selectedId={
-            selectedTechnicianId
-          }
-          isLoading={isFetching}
-          onSelect={
-            setSelectedTechnicianId
-          }
-        />
-
-        <div className="min-w-0 space-y-4">
+        <div
+          className="min-w-0 space-y-6"
+          aria-busy={loading}
+        >
           <Card>
             <CardHeader>
               <CardTitle>
-                {selectedTechnician
-                  ? selectedTechnician.nama_lengkap
-                  : "Detail presensi"}
+                {selected?.nama_lengkap ??
+                  "Pilih teknisi"}
               </CardTitle>
 
               <CardDescription>
-                {selectedTechnician?.nik
-                  ? `NIK ${selectedTechnician.nik}`
-                  : "Pilih teknisi untuk melihat data."}
+                {period.label} · NIK:{" "}
+                {selected?.nik ?? "—"}
               </CardDescription>
-
-              <CardAction>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <Select
-                    value={filterMode}
-                    onValueChange={(value) =>
-                      setFilterMode(
-                        value as FilterMode,
-                      )
-                    }
-                  >
-                    <SelectTrigger className="w-44">
-                      <SelectValue />
-                    </SelectTrigger>
-
-                    <SelectContent>
-                      <SelectItem value="hari">
-                        Hari ini
-                      </SelectItem>
-
-                      <SelectItem value="minggu">
-                        7 hari terakhir
-                      </SelectItem>
-
-                      <SelectItem value="bulan">
-                        Pilih bulan
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  {filterMode === "bulan" ? (
-                    <Input
-                      type="month"
-                      value={selectedMonthKey}
-                      max={getWibMonthKey(
-                        new Date(),
-                      )}
-                      onChange={(event) => {
-                        const nextMonth =
-                          event.target.value;
-
-                        if (nextMonth) {
-                          setSelectedMonthKey(
-                            nextMonth,
-                          );
-                        }
-                      }}
-                      className="w-40"
-                      aria-label="Pilih bulan riwayat presensi"
-                    />
-                  ) : null}
-                </div>
-              </CardAction>
             </CardHeader>
 
-            <CardContent>
-              <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border lg:grid-cols-4">
-                {[
-                  {
-                    label: "Presensi resmi",
-                    value:
-                      attendanceSummary.official,
-                  },
-                  {
-                    label: "Valid",
-                    value:
-                      attendanceSummary.valid,
-                  },
-                  {
-                    label: "Percobaan ditolak",
-                    value:
-                      attendanceSummary.rejected,
-                  },
-                  {
-                    label: "Hari lengkap",
-                    value:
-                      attendanceSummary.completeDays,
-                  },
-                ].map((summary, index) => (
-                  <div
-                    key={summary.label}
-                    className={[
-                      "px-4 py-3",
-                      "border-border",
-                      index % 2 === 0
-                        ? "border-r"
-                        : "",
-                      index < 2
-                        ? "border-b lg:border-b-0"
-                        : "",
-                      index === 1
-                        ? "lg:border-r"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <p className="text-[11px] font-medium text-muted-foreground">
-                      {summary.label}
-                    </p>
-
-                    <p className="mt-1 text-xl font-semibold text-foreground tabular-nums">
-                      {isFetching
-                        ? "-"
-                        : summary.value}
-                    </p>
-                  </div>
-                ))}
-              </div>
+            <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {[
+                ["Total log", logs.length],
+                [
+                  "Log valid",
+                  logs.filter(
+                    (log) =>
+                      log.is_valid === true,
+                  ).length,
+                ],
+                [
+                  "Hari lengkap",
+                  days.filter(
+                    (day) => day.complete,
+                  ).length,
+                ],
+                [
+                  "Percobaan ditolak",
+                  audits.length,
+                ],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="rounded-md border p-3"
+                >
+                  <p className="text-sm text-muted-foreground">
+                    {label}
+                  </p>
+                  <p className="text-2xl font-semibold">
+                    {loading ? "—" : value}
+                  </p>
+                </div>
+              ))}
             </CardContent>
           </Card>
 
-          <div className="grid grid-cols-1 items-start gap-4 2xl:grid-cols-[minmax(0,1fr)_400px]">
-            <Card className="min-w-0 gap-0 overflow-hidden">
-              <CardHeader className="pb-4">
-                <CardTitle>
-                  Riwayat presensi
-                </CardTitle>
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                Log presensi
+              </CardTitle>
 
-                <CardDescription>
-                  Data masuk, pulang, dan validasi
-                  lokasi teknisi terpilih.
-                </CardDescription>
-              </CardHeader>
+              <CardDescription>
+                Masuk dan pulang dalam periode
+                terpilih. 25 baris per halaman.
+              </CardDescription>
+            </CardHeader>
 
-              <CardContent className="px-0 [&:last-child]:pb-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>
-                        Waktu
-                      </TableHead>
-
-                      <TableHead>
-                        Tipe
-                      </TableHead>
-
-                      <TableHead>
-                        Koordinat
-                      </TableHead>
-
-                      <TableHead>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="p-2">
+                        Waktu WIB
+                      </th>
+                      <th className="p-2">
+                        Jenis
+                      </th>
+                      <th className="p-2">
                         Validasi
-                      </TableHead>
-
-                      <TableHead className="w-14 text-right">
+                      </th>
+                      <th className="p-2">
+                        Lokasi
+                      </th>
+                      <th className="p-2">
                         Aksi
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
+                      </th>
+                    </tr>
+                  </thead>
 
-                  <TableBody>
-                    {isFetching ? (
-                      Array.from({
-                        length: 6,
-                      }).map((_, index) => (
-                        <TableRow key={index}>
-                          <TableCell>
-                            <Skeleton className="h-4 w-32" />
-                          </TableCell>
-
-                          <TableCell>
-                            <Skeleton className="h-5 w-14 rounded-full" />
-                          </TableCell>
-
-                          <TableCell>
-                            <Skeleton className="h-4 w-36" />
-                          </TableCell>
-
-                          <TableCell>
-                            <Skeleton className="h-5 w-20 rounded-full" />
-                          </TableCell>
-
-                          <TableCell>
-                            <Skeleton className="ml-auto size-8" />
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : !selectedTechnician ? (
-                      <TableRow>
-                        <TableCell
-                          colSpan={5}
-                          className="h-32 text-center text-sm text-muted-foreground"
-                        >
-                          Pilih teknisi terlebih
-                          dahulu.
-                        </TableCell>
-                      </TableRow>
-                    ) : filteredLogs.length ===
-                      0 ? (
-                      <TableRow>
-                        <TableCell
-                          colSpan={5}
-                          className="h-32 text-center text-sm text-muted-foreground"
-                        >
-                          Tidak ada presensi pada
-                          rentang waktu ini.
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      filteredLogs.map((log) => {
-                        const technicianName =
-                          getTechnicianName(
-                            log.teknisi,
-                          );
-
-                        const formattedTime =
-                          formatWibDateTime(
-                            log.waktu_log,
-                          );
-
-                        const validCoordinates =
-                          hasCoordinates(
-                            log.latitude_aktual,
-                            log.longitude_aktual,
-                          );
-
-                        return (
-                          <TableRow
-                            key={log.id_absen}
+                  <tbody>
+                    {!loading &&
+                      visibleLogs.map(
+                        (log) => (
+                          <tr
+                            className="border-b"
+                            key={String(
+                              log.id_absen,
+                            )}
                           >
-                            <TableCell className="whitespace-nowrap text-xs font-medium">
-                              {formattedTime}
-                            </TableCell>
-
-                            <TableCell>
-                              <Badge
-                                variant={
-                                  log.tipe_log ===
-                                  "MASUK"
-                                    ? "success"
-                                    : log.tipe_log ===
-                                        "PULANG"
-                                      ? "warning"
-                                      : "neutral"
-                                }
-                              >
-                                {log.tipe_log ||
-                                  "Tidak diketahui"}
-                              </Badge>
-                            </TableCell>
-
-                            <TableCell>
-                              {validCoordinates ? (
-                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-mono text-[10px] text-muted-foreground">
-                                  <MapPin
-                                    className="size-3"
-                                    aria-hidden="true"
-                                  />
-
-                                  {Number(
-                                    log.latitude_aktual,
-                                  ).toFixed(5)}
-                                  ,{" "}
-                                  {Number(
-                                    log.longitude_aktual,
-                                  ).toFixed(5)}
-                                </span>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">
-                                  GPS tidak tersedia
-                                </span>
+                            <td className="whitespace-nowrap p-2">
+                              {formatTime(
+                                log.waktu_log,
                               )}
-                            </TableCell>
+                            </td>
 
-                            <TableCell>
+                            <td className="p-2">
+                              {log.tipe_log ??
+                                "—"}
+                            </td>
+
+                            <td className="p-2">
                               <Badge
                                 variant={
                                   log.is_valid ===
@@ -1065,276 +1003,257 @@ export default function AttendancePage() {
                                     : log.is_valid ===
                                         false
                                       ? "destructive"
-                                      : "neutral"
+                                      : "secondary"
                                 }
                               >
                                 {log.is_valid ===
                                 true
-                                  ? "Sesuai radius"
+                                  ? "Valid"
                                   : log.is_valid ===
                                       false
-                                    ? "Di luar radius"
-                                    : "Belum divalidasi"}
+                                    ? "Tidak valid"
+                                    : "Belum diketahui"}
                               </Badge>
-                            </TableCell>
+                            </td>
 
-                            <TableCell className="text-right">
+                            <td className="whitespace-nowrap p-2">
+                              {mapLink(
+                                log.latitude_aktual,
+                                log.longitude_aktual,
+                              )}
+                            </td>
+
+                            <td className="p-2">
                               <Button
                                 variant="ghost"
-                                size="icon-sm"
-                                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                onClick={() =>
-                                  setDeleteTarget({
-                                    id: log.id_absen,
-                                    technicianName,
-                                    formattedTime,
-                                  })
+                                size="icon"
+                                aria-label="Hapus presensi"
+                                disabled={
+                                  deleting ||
+                                  exporting
                                 }
-                                aria-label={`Hapus presensi ${technicianName}`}
-                                title="Hapus presensi"
+                                onClick={() =>
+                                  setDeleteTarget(
+                                    log,
+                                  )
+                                }
                               >
-                                <Trash2
-                                  aria-hidden="true"
-                                />
+                                <Trash2 className="text-destructive" />
                               </Button>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })
+                            </td>
+                          </tr>
+                        ),
+                      )}
+
+                    {(!visibleLogs.length ||
+                      loading) && (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="p-6 text-center text-muted-foreground"
+                        >
+                          {loading
+                            ? "Memuat..."
+                            : "Tidak ada log pada periode ini."}
+                        </td>
+                      </tr>
                     )}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
+                  </tbody>
+                </table>
+              </div>
 
-            <Card className="min-w-0 gap-0 overflow-hidden">
-              <CardHeader className="pb-4">
-                <CardTitle>
-                  Percobaan ditolak
-                </CardTitle>
+              <div className="mt-4 flex items-center justify-between gap-2 text-sm">
+                <span>
+                  Halaman {currentPage}/
+                  {totalPages} · {logs.length}{" "}
+                  log
+                </span>
 
-                <CardDescription>
-                  Audit presensi teknisi terpilih
-                  yang tidak lolos validasi.
-                </CardDescription>
-
-                <CardAction>
-                  <Badge
-                    variant={
-                      filteredRejectedAudits.length > 0
-                        ? "destructive"
-                        : "success"
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      loading ||
+                      currentPage <= 1
+                    }
+                    onClick={() =>
+                      setPage(currentPage - 1)
                     }
                   >
-                    {filteredRejectedAudits.length}
-                  </Badge>
-                </CardAction>
-              </CardHeader>
+                    Sebelumnya
+                  </Button>
 
-              <CardContent className="px-0 [&:last-child]:pb-0">
-                <div className="max-h-[560px] overflow-y-auto border-t border-border">
-                  {isFetching ? (
-                    Array.from({
-                      length: 5,
-                    }).map((_, index) => (
-                      <div
-                        key={index}
-                        className="space-y-3 border-b border-border p-4 last:border-b-0"
-                      >
-                        <div className="flex justify-between gap-3">
-                          <Skeleton className="h-5 w-16 rounded-full" />
-                          <Skeleton className="h-3 w-28" />
-                        </div>
-
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-4/5" />
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <Skeleton className="h-11 w-full" />
-                          <Skeleton className="h-11 w-full" />
-                        </div>
-                      </div>
-                    ))
-                  ) : !selectedTechnician ? (
-                    <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 text-center">
-                      <ShieldAlert
-                        className="size-5 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-
-                      <p className="text-xs text-muted-foreground">
-                        Pilih teknisi untuk melihat
-                        percobaan presensi yang ditolak.
-                      </p>
-                    </div>
-                  ) : filteredRejectedAudits.length ===
-                    0 ? (
-                    <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 text-center">
-                      <ShieldAlert
-                        className="size-5 text-success"
-                        aria-hidden="true"
-                      />
-
-                      <p className="text-xs font-medium text-foreground">
-                        Tidak ada penolakan
-                      </p>
-
-                      <p className="text-[11px] leading-relaxed text-muted-foreground">
-                        Tidak ada percobaan presensi
-                        yang ditolak pada rentang waktu
-                        ini.
-                      </p>
-                    </div>
-                  ) : (
-                    filteredRejectedAudits.map(
-                      (audit) => {
-                        const validCoordinates =
-                          hasCoordinates(
-                            audit.latitude,
-                            audit.longitude,
-                          );
-
-                        return (
-                          <article
-                            key={audit.id_audit}
-                            className="border-b border-border p-4 last:border-b-0"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <Badge
-                                  variant={
-                                    audit.attendance_type ===
-                                    "MASUK"
-                                      ? "success"
-                                      : audit.attendance_type ===
-                                          "PULANG"
-                                        ? "warning"
-                                        : "neutral"
-                                  }
-                                >
-                                  {audit.attendance_type ||
-                                    "Tidak diketahui"}
-                                </Badge>
-
-                                <Badge variant="destructive">
-                                  Ditolak
-                                </Badge>
-                              </div>
-
-                              <time
-                                className="shrink-0 text-right text-[10px] leading-relaxed text-muted-foreground"
-                                dateTime={
-                                  audit.created_at ??
-                                  undefined
-                                }
-                              >
-                                {formatWibDateTime(
-                                  audit.created_at,
-                                )}
-                              </time>
-                            </div>
-
-                            <div className="mt-3 flex items-start gap-2">
-                              <ShieldAlert
-                                className="mt-0.5 size-4 shrink-0 text-destructive"
-                                aria-hidden="true"
-                              />
-
-                              <p className="text-xs leading-relaxed text-foreground">
-                                {audit.reason ||
-                                  "Permintaan ditolak oleh server."}
-                              </p>
-                            </div>
-
-                            <div className="mt-3 grid grid-cols-2 gap-2">
-                              <div className="col-span-2 rounded-md border border-border bg-muted/30 px-3 py-2">
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                  Lokasi perangkat
-                                </p>
-
-                                {validCoordinates ? (
-                                  <p className="mt-1 inline-flex items-center gap-1.5 font-mono text-[10px] text-foreground">
-                                    <MapPin
-                                      className="size-3 text-muted-foreground"
-                                      aria-hidden="true"
-                                    />
-
-                                    {Number(
-                                      audit.latitude,
-                                    ).toFixed(5)}
-                                    ,{" "}
-                                    {Number(
-                                      audit.longitude,
-                                    ).toFixed(5)}
-                                  </p>
-                                ) : (
-                                  <p className="mt-1 text-[10px] text-muted-foreground">
-                                    GPS tidak tersedia
-                                  </p>
-                                )}
-                              </div>
-
-                              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                  Jarak kantor
-                                </p>
-
-                                <p className="mt-1 text-xs font-semibold tabular-nums text-foreground">
-                                  {formatMeters(
-                                    audit.distance_meters,
-                                  )}
-                                </p>
-                              </div>
-
-                              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                  Akurasi GPS
-                                </p>
-
-                                <p className="mt-1 text-xs font-semibold tabular-nums text-foreground">
-                                  {formatMeters(
-                                    audit.accuracy_meters,
-                                  )}
-                                </p>
-                              </div>
-                            </div>
-
-                            {audit.is_mock === true ? (
-                              <Badge
-                                variant="destructive"
-                                className="mt-3"
-                              >
-                                Lokasi tiruan terdeteksi
-                              </Badge>
-                            ) : null}
-                          </article>
-                        );
-                      },
-                    )
-                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      loading ||
+                      currentPage >= totalPages
+                    }
+                    onClick={() =>
+                      setPage(currentPage + 1)
+                    }
+                  >
+                    Berikutnya
+                  </Button>
                 </div>
-              </CardContent>
-            </Card>
-          </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                Percobaan presensi ditolak
+              </CardTitle>
+
+              <CardDescription>
+                Audit tetap tersimpan setelah
+                log presensi dihapus.
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="p-2">
+                        Waktu WIB
+                      </th>
+                      <th className="p-2">
+                        Jenis
+                      </th>
+                      <th className="p-2">
+                        Alasan
+                      </th>
+                      <th className="p-2">
+                        Lokasi
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {!loading &&
+                      visibleAudits.map(
+                        (audit) => (
+                          <tr
+                            className="border-b"
+                            key={String(
+                              audit.id_audit,
+                            )}
+                          >
+                            <td className="whitespace-nowrap p-2">
+                              {formatTime(
+                                audit.created_at,
+                              )}
+                            </td>
+
+                            <td className="p-2">
+                              {audit.attendance_type ??
+                                "—"}
+                            </td>
+
+                            <td className="p-2">
+                              {audit.reason ??
+                                "—"}
+                            </td>
+
+                            <td className="whitespace-nowrap p-2">
+                              {mapLink(
+                                audit.latitude,
+                                audit.longitude,
+                              )}
+                            </td>
+                          </tr>
+                        ),
+                      )}
+
+                    {(!visibleAudits.length ||
+                      loading) && (
+                      <tr>
+                        <td
+                          colSpan={4}
+                          className="p-6 text-center text-muted-foreground"
+                        >
+                          {loading
+                            ? "Memuat..."
+                            : "Tidak ada percobaan ditolak pada periode ini."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between gap-2 text-sm">
+                <span>
+                  Halaman {currentAuditPage}/
+                  {totalAuditPages} ·{" "}
+                  {audits.length} audit
+                </span>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      loading ||
+                      currentAuditPage <= 1
+                    }
+                    onClick={() =>
+                      setAuditPage(
+                        currentAuditPage - 1,
+                      )
+                    }
+                  >
+                    Sebelumnya
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      loading ||
+                      currentAuditPage >=
+                        totalAuditPages
+                    }
+                    onClick={() =>
+                      setAuditPage(
+                        currentAuditPage + 1,
+                      )
+                    }
+                  >
+                    Berikutnya
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
       <DeleteAttendanceDialog
-        open={Boolean(deleteTarget)}
+        open={!!deleteTarget}
         technicianName={
-          deleteTarget?.technicianName ?? ""
+          selected?.nama_lengkap ?? "Teknisi"
         }
-        attendanceTime={
-          deleteTarget?.formattedTime ?? ""
-        }
+        attendanceTime={formatTime(
+          deleteTarget?.waktu_log ?? null,
+        )}
         onOpenChange={(open) => {
           if (!open) {
             setDeleteTarget(null);
           }
         }}
-        onConfirm={
-          handleDeleteAttendance
-        }
+        onConfirm={deleteAttendance}
+      />
+
+      <DeleteAllAttendanceDialog
+        open={deleteAllOpen}
+        onOpenChange={setDeleteAllOpen}
+        onConfirm={deleteAll}
       />
     </div>
   );
