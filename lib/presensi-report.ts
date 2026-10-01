@@ -34,6 +34,7 @@ export type Period = {
   end: string;
   label: string;
   key: string;
+  mode: FilterMode;
 };
 
 export type FilterMode = "hari" | "minggu" | "bulan";
@@ -84,6 +85,7 @@ export function getPeriod(
   mode: FilterMode,
   month: string,
   now = new Date(),
+  weekAnchor = dateKey(now),
 ): Period {
   if (mode === "bulan") {
     if (!/^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(month)) {
@@ -111,29 +113,67 @@ export function getPeriod(
       end,
       label,
       key: month,
+      mode,
     };
   }
 
   const today = dateKey(now);
-  const endMs =
-    Date.parse(`${today}T00:00:00+07:00`) + DAY;
-
-  const startMs =
-    endMs - (mode === "minggu" ? 7 : 1) * DAY;
-
-  const start = new Date(startMs).toISOString();
-  const end = new Date(endMs).toISOString();
-  const first = dateKey(start);
-
+  if (mode === "minggu") {
+    const anchor = parseDay(weekAnchor);
+    const weekday = new Date(anchor + WIB).getUTCDay();
+    const monday = anchor - ((weekday + 6) % 7) * DAY;
+    const saturday = dateKey(new Date(monday + 5 * DAY));
+    const first = dateKey(new Date(monday));
+    return {
+      start: new Date(monday).toISOString(),
+      end: new Date(monday + 6 * DAY).toISOString(),
+      label: `${formatDay(first)} – ${formatDay(saturday)}`,
+      key: `${first}_${saturday}`,
+      mode,
+    };
+  }
+  const startMs = parseDay(today);
   return {
-    start,
-    end,
-    label:
-      mode === "hari"
-        ? `Hari ini (${today})`
-        : `${first} sampai ${today}`,
-    key: `${first}_${today}`,
+    start: new Date(startMs).toISOString(),
+    end: new Date(startMs + DAY).toISOString(),
+    label: `Hari ini (${formatDay(today)})`,
+    key: today,
+    mode,
   };
+}
+
+export type ReportHoliday = { day: string; name: string; updated_at: string };
+
+export function parseDay(day: string): number {
+  if (!/^[1-9]\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(day)) {
+    throw new Error("Tanggal tidak valid.");
+  }
+  const ms = Date.parse(`${day}T00:00:00+07:00`);
+  if (!Number.isFinite(ms) || dateKey(new Date(ms)) !== day) {
+    throw new Error("Tanggal tidak valid.");
+  }
+  return ms;
+}
+
+export function formatDay(day: string, short = false): string {
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta", day: "numeric",
+    month: short ? "short" : "long", year: short ? undefined : "numeric",
+  }).format(new Date(parseDay(day)));
+}
+
+export function periodDays(period: Period): string[] {
+  const start = Date.parse(period.start), end = Date.parse(period.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 32 * DAY) {
+    throw new Error("Periode laporan tidak valid.");
+  }
+  const result: string[] = [];
+  for (let ms = start; ms < end; ms += DAY) result.push(dateKey(new Date(ms)));
+  return result;
+}
+
+export function shiftWeek(day: string, offset: number): string {
+  return dateKey(new Date(parseDay(day) + offset * 7 * DAY));
 }
 
 type PageResult<T> = {
@@ -155,16 +195,19 @@ export async function readAll<T>(
     from: number,
     to: number,
   ) => PromiseLike<PageResult<T>>,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   const rows: T[] = [];
   let expected: number | null = null;
 
   for (;;) {
+    signal?.throwIfAborted();
     const result = await request(
       rows.length,
       rows.length + 499,
     );
 
+    signal?.throwIfAborted();
     if (result.error) {
       console.error(
         "Query presensi gagal:",
@@ -303,413 +346,4 @@ export function dailyRecap(logs: Attendance[]) {
     });
 }
 
-export async function createAttendanceWorkbook(
-  input: {
-    technicians: Technician[];
-    logs: Attendance[];
-    audits: AttendanceAudit[];
-    period: Period;
-    scope: string;
-  },
-) {
-  const ExcelJS = await import("exceljs");
-  const workbook = new ExcelJS.Workbook();
-
-  workbook.creator = "BTI Admin";
-  workbook.created = new Date();
-
-  const {
-    technicians,
-    logs,
-    audits,
-    period,
-    scope,
-  } = input;
-
-  const people = new Map(
-    technicians.map((person) => [
-      String(person.id),
-      person,
-    ]),
-  );
-
-  // Tetap sertakan pemilik log apabila akun teknisinya
-  // sudah tidak ada di daftar teknisi.
-  const referencedIds = [
-    ...logs.map((row) =>
-      String(row.id_teknisi),
-    ),
-    ...audits.map((row) =>
-      String(row.technician_id),
-    ),
-  ];
-
-  for (const id of referencedIds) {
-    if (!people.has(id)) {
-      people.set(id, {
-        id,
-        nama_lengkap: `Teknisi ${id}`,
-        nik: null,
-      });
-    }
-  }
-
-  const days = dailyRecap(logs);
-
-  // Excel menyimpan tanggal sebagai angka serial.
-  // Ditambahkan offset WIB agar waktu tampil konsisten.
-  const serial = (
-    value: string | number | null,
-  ) => {
-    if (value === null) {
-      return null;
-    }
-
-    const ms =
-      typeof value === "number"
-        ? value
-        : Date.parse(value);
-
-    return Number.isFinite(ms)
-      ? (ms + WIB) / DAY + 25569
-      : null;
-  };
-
-  type Cell = string | number | null;
-
-  const sheet = (
-    name: string,
-    headers: string[],
-    rows: Cell[][],
-    dateColumns: number[] = [],
-  ) => {
-    const ws = workbook.addWorksheet(name);
-
-    ws.addRow(["Laporan Presensi BTI"]);
-
-    ws.addRow([
-      "Periode",
-      period.label,
-      "Zona waktu",
-      "WIB (UTC+7)",
-    ]);
-
-    ws.addRow([
-      "Cakupan",
-      scope,
-      "Diekspor",
-      formatTime(new Date().toISOString()),
-    ]);
-
-    ws.addRow([
-      "Catatan",
-      "Durasi: masuk valid pertama sampai pulang valid terakhir pada hari WIB yang sama. Bukan perhitungan gaji/lembur. Hari tanpa log tidak dinilai sebagai absen.",
-    ]);
-
-    ws.addRow([]);
-    ws.addRow(headers);
-
-    rows.forEach((row) => ws.addRow(row));
-
-    ws.views = [
-      {
-        state: "frozen",
-        ySplit: 6,
-      },
-    ];
-
-    ws.autoFilter = {
-      from: {
-        row: 6,
-        column: 1,
-      },
-      to: {
-        row: Math.max(6, ws.rowCount),
-        column: headers.length,
-      },
-    };
-
-    ws.getRow(1).font = {
-      bold: true,
-      size: 16,
-    };
-
-    ws.getRow(6).eachCell((cell) => {
-      cell.font = {
-        bold: true,
-        color: {
-          argb: "FFFFFFFF",
-        },
-      };
-
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: {
-          argb: "FF17365D",
-        },
-      };
-    });
-
-    headers.forEach((header, index) => {
-      ws.getColumn(index + 1).width =
-        /Nama|Alasan/.test(header)
-          ? 36
-          : 24;
-    });
-
-    for (
-      let row = 7;
-      row <= ws.rowCount;
-      row++
-    ) {
-      dateColumns.forEach((column) => {
-        ws.getCell(row, column).numFmt =
-          "dd/mm/yyyy hh:mm:ss";
-      });
-    }
-
-    return ws;
-  };
-
-  const summaries = [...people.values()].map(
-    (person) => {
-      const id = String(person.id);
-
-      const own = logs.filter(
-        (log) =>
-          String(log.id_teknisi) === id,
-      );
-
-      const ownDays = days.filter(
-        (day) => day.technicianId === id,
-      );
-
-      const valid = own.filter(
-        (log) => log.is_valid === true,
-      );
-
-      return [
-        id,
-        person.nik ?? "",
-        person.nama_lengkap,
-        own.length,
-        valid.length,
-        own.filter(
-          (log) => log.is_valid === false,
-        ).length,
-        own.filter(
-          (log) => log.is_valid === null,
-        ).length,
-        valid.filter(
-          (log) =>
-            log.tipe_log
-              ?.trim()
-              .toUpperCase() === "MASUK",
-        ).length,
-        valid.filter(
-          (log) =>
-            log.tipe_log
-              ?.trim()
-              .toUpperCase() === "PULANG",
-        ).length,
-        ownDays.filter(
-          (day) => day.masuk !== null,
-        ).length,
-        ownDays.filter(
-          (day) => day.complete,
-        ).length,
-        ownDays.reduce(
-          (total, day) =>
-            total + (day.hours ?? 0),
-          0,
-        ),
-        audits.filter(
-          (audit) =>
-            String(audit.technician_id) === id,
-        ).length,
-      ];
-    },
-  );
-
-  const summary = sheet(
-    "Rekap Teknisi",
-    [
-      "ID Teknisi",
-      "NIK",
-      "Nama",
-      "Total log",
-      "Log valid",
-      "Log tidak valid",
-      "Validasi belum diketahui",
-      "Masuk valid",
-      "Pulang valid",
-      "Hari masuk valid",
-      "Hari lengkap",
-      "Durasi tercatat (jam)",
-      "Percobaan ditolak",
-    ],
-    summaries,
-  );
-
-  summary.getColumn(12).numFmt = "0.00";
-
-  const daily = sheet(
-    "Rekap Harian",
-    [
-      "Tanggal WIB",
-      "ID Teknisi",
-      "NIK",
-      "Nama",
-      "Masuk valid pertama",
-      "Pulang valid terakhir",
-      "Total log",
-      "Log valid",
-      "Status",
-      "Durasi tercatat (jam)",
-    ],
-    days.map((day) => {
-      const person = people.get(
-        day.technicianId,
-      )!;
-
-      return [
-        day.day,
-        day.technicianId,
-        person.nik ?? "",
-        person.nama_lengkap,
-        serial(day.masuk),
-        serial(day.pulang),
-        day.logs,
-        day.valid,
-        day.complete
-          ? "Lengkap"
-          : "Tidak lengkap",
-        day.hours,
-      ];
-    }),
-    [5, 6],
-  );
-
-  daily.getColumn(10).numFmt = "0.00";
-
-  sheet(
-    "Detail Presensi",
-    [
-      "ID Presensi",
-      "ID Teknisi",
-      "NIK",
-      "Nama",
-      "Waktu WIB",
-      "Jenis",
-      "Validasi",
-      "Latitude",
-      "Longitude",
-    ],
-    logs.map((log) => {
-      const person = people.get(
-        String(log.id_teknisi),
-      )!;
-
-      return [
-        String(log.id_absen),
-        String(log.id_teknisi),
-        person.nik ?? "",
-        person.nama_lengkap,
-        serial(log.waktu_log),
-        log.tipe_log ?? "",
-        log.is_valid === true
-          ? "Valid"
-          : log.is_valid === false
-            ? "Tidak valid"
-            : "Belum diketahui",
-        log.latitude_aktual,
-        log.longitude_aktual,
-      ];
-    }),
-    [5],
-  );
-
-  sheet(
-    "Percobaan Ditolak",
-    [
-      "ID Audit",
-      "ID Teknisi",
-      "Nama",
-      "Waktu WIB",
-      "Jenis",
-      "Hasil",
-      "Alasan",
-      "Latitude",
-      "Longitude",
-      "Akurasi (m)",
-      "Usia lokasi (ms)",
-      "Jarak (m)",
-      "Mock location",
-    ],
-    audits.map((audit) => [
-      String(audit.id_audit),
-      String(audit.technician_id),
-      people.get(
-        String(audit.technician_id),
-      )!.nama_lengkap,
-      serial(audit.created_at),
-      audit.attendance_type ?? "",
-      audit.result,
-      audit.reason ?? "",
-      audit.latitude,
-      audit.longitude,
-      audit.accuracy_meters,
-      audit.location_age_ms,
-      audit.distance_meters,
-      audit.is_mock === null
-        ? "Belum diketahui"
-        : audit.is_mock
-          ? "Ya"
-          : "Tidak",
-    ]),
-    [4],
-  );
-
-  return workbook;
-}
-
-export async function downloadAttendanceReport(
-  input: Parameters<
-    typeof createAttendanceWorkbook
-  >[0],
-) {
-  const workbook =
-    await createAttendanceWorkbook(input);
-
-  const buffer =
-    await workbook.xlsx.writeBuffer();
-
-  const bytes = new Uint8Array(buffer);
-
-  const blob = new Blob([bytes], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
-
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-
-  anchor.href = url;
-
-  anchor.download =
-    `Rekap_Presensi_${input.period.key}_` +
-    `${
-      input.scope === "Semua teknisi"
-        ? "semua"
-        : "teknisi"
-    }.xlsx`;
-
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-
-  setTimeout(
-    () => URL.revokeObjectURL(url),
-    60_000,
-  );
-}
+export { createAttendanceWorkbook, downloadAttendanceReport } from "./presensi-workbook";
